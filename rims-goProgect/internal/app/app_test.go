@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 ShangBin Wang
+
 package app
 
 import (
@@ -12,8 +15,9 @@ func TestBuildRouterHealthz(t *testing.T) {
 	cfg := config.Config{
 		JWTSecret:      "test-secret",
 		JWTExpireHours: 1,
-		DemoUser:       "admin",
-		DemoPassword:   "admin123",
+		CORSOrigins:    "*",
+		ReadTimeout:    30,
+		WriteTimeout:   30,
 	}
 	r := buildRouter(cfg, nil)
 

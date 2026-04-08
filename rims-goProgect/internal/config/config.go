@@ -10,10 +10,12 @@ import (
 	"github.com/spf13/viper"
 )
 
+// Config holds all application configuration loaded from environment.
 type Config struct {
 	AppEnv  string
 	AppPort string
 
+	// Database
 	DBHost        string
 	DBPort        string
 	DBUser        string
@@ -22,13 +24,28 @@ type Config struct {
 	DBSSLMode     string
 	DBAutoMigrate bool
 
+	// JWT
 	JWTSecret      string
 	JWTExpireHours int
 
-	DemoUser     string
-	DemoPassword string
+	// File upload
+	UploadDir   string
+	MaxUploadMB int
+	AllowedExts string
+
+	// Logging
+	LogLevel  string
+	LogFormat string
+
+	// HTTP server
+	ReadTimeout  int
+	WriteTimeout int
+
+	// CORS
+	CORSOrigins string
 }
 
+// Load reads configuration from .env files and environment variables.
 func Load() (Config, error) {
 	v := viper.New()
 	v.SetConfigType("env")
@@ -48,23 +65,35 @@ func Load() (Config, error) {
 	v.SetDefault("DB_SSLMODE", "disable")
 	v.SetDefault("DB_AUTO_MIGRATE", true)
 	v.SetDefault("JWT_EXPIRE_HOURS", 24)
-	v.SetDefault("DEMO_USER", "admin")
-	v.SetDefault("DEMO_PASSWORD", "admin123")
+	v.SetDefault("UPLOAD_DIR", "./uploads")
+	v.SetDefault("MAX_UPLOAD_MB", 10)
+	v.SetDefault("ALLOWED_EXTS", ".jpg,.jpeg,.png,.gif,.xlsx,.csv,.pdf")
+	v.SetDefault("LOG_LEVEL", "info")
+	v.SetDefault("LOG_FORMAT", "text")
+	v.SetDefault("READ_TIMEOUT", 30)
+	v.SetDefault("WRITE_TIMEOUT", 30)
+	v.SetDefault("CORS_ORIGINS", "*")
 
 	cfg := Config{
-		AppEnv:         v.GetString("APP_ENV"),
-		AppPort:        v.GetString("APP_PORT"),
-		DBHost:         v.GetString("DB_HOST"),
-		DBPort:         v.GetString("DB_PORT"),
-		DBUser:         v.GetString("DB_USER"),
-		DBPassword:     v.GetString("DB_PASSWORD"),
-		DBName:         v.GetString("DB_NAME"),
-		DBSSLMode:      v.GetString("DB_SSLMODE"),
-		DBAutoMigrate:  v.GetBool("DB_AUTO_MIGRATE"),
-		JWTSecret:      v.GetString("JWT_SECRET"),
+		AppEnv:        v.GetString("APP_ENV"),
+		AppPort:       v.GetString("APP_PORT"),
+		DBHost:        v.GetString("DB_HOST"),
+		DBPort:        v.GetString("DB_PORT"),
+		DBUser:        v.GetString("DB_USER"),
+		DBPassword:    v.GetString("DB_PASSWORD"),
+		DBName:        v.GetString("DB_NAME"),
+		DBSSLMode:     v.GetString("DB_SSLMODE"),
+		DBAutoMigrate: v.GetBool("DB_AUTO_MIGRATE"),
+		JWTSecret:     v.GetString("JWT_SECRET"),
 		JWTExpireHours: v.GetInt("JWT_EXPIRE_HOURS"),
-		DemoUser:       v.GetString("DEMO_USER"),
-		DemoPassword:   v.GetString("DEMO_PASSWORD"),
+		UploadDir:     v.GetString("UPLOAD_DIR"),
+		MaxUploadMB:   v.GetInt("MAX_UPLOAD_MB"),
+		AllowedExts:   v.GetString("ALLOWED_EXTS"),
+		LogLevel:      v.GetString("LOG_LEVEL"),
+		LogFormat:     v.GetString("LOG_FORMAT"),
+		ReadTimeout:   v.GetInt("READ_TIMEOUT"),
+		WriteTimeout:  v.GetInt("WRITE_TIMEOUT"),
+		CORSOrigins:   v.GetString("CORS_ORIGINS"),
 	}
 
 	if cfg.DBPassword == "" {
@@ -75,9 +104,6 @@ func Load() (Config, error) {
 	}
 	if cfg.JWTExpireHours <= 0 {
 		return Config{}, fmt.Errorf("JWT_EXPIRE_HOURS must be > 0")
-	}
-	if cfg.DemoUser == "" || cfg.DemoPassword == "" {
-		return Config{}, fmt.Errorf("DEMO_USER and DEMO_PASSWORD are required")
 	}
 
 	return cfg, nil

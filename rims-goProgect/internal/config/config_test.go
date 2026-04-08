@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 ShangBin Wang
+
 package config
 
 import "testing"
@@ -14,8 +17,6 @@ func TestLoadReadsEnvironmentOverrides(t *testing.T) {
 	t.Setenv("JWT_SECRET", "jwt-secret")
 	t.Setenv("JWT_EXPIRE_HOURS", "12")
 	t.Setenv("DB_AUTO_MIGRATE", "true")
-	t.Setenv("DEMO_USER", "admin")
-	t.Setenv("DEMO_PASSWORD", "admin123")
 
 	cfg, err := Load()
 	if err != nil {
@@ -39,8 +40,6 @@ func TestLoadReadsEnvironmentOverrides(t *testing.T) {
 func TestLoadRequiresJWTSecret(t *testing.T) {
 	t.Setenv("DB_PASSWORD", "secret")
 	t.Setenv("JWT_SECRET", "")
-	t.Setenv("DEMO_USER", "admin")
-	t.Setenv("DEMO_PASSWORD", "admin123")
 
 	_, err := Load()
 	if err == nil {
