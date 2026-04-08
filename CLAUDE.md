@@ -12,9 +12,13 @@ Licensed under AGPL-3.0. All source files must include the SPDX header:
 // Copyright (c) 2026 ShangBin Wang
 ```
 
+## Runtime Environment
+
+All commands (Go, Docker, tests) must run inside **WSL** (Ubuntu), not Windows. The project directory in WSL is `/mnt/e/My Work/RIMS`. Use `wsl -- bash -c "..."` when executing from a Windows shell. PostgreSQL runs as a Docker container in WSL, and Go services connect via `127.0.0.1:5432` — this only works when Go also runs inside WSL.
+
 ## Common Commands
 
-All Go commands run from `rims-goProgect/`:
+All Go commands run inside WSL, from `rims-goProgect/`:
 
 ```bash
 # Start dependencies (PostgreSQL)
