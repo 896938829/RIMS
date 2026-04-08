@@ -43,7 +43,7 @@ cd rims-goProgect && swag init -g cmd/server/main.go -o docs
 
 **Stack**: Gin (HTTP router) + GORM (ORM) + PostgreSQL + JWT auth + Swagger (swaggo)
 
-**Configuration**: Viper reads from `.env` file (workspace root or `rims-goProgect/`) and environment variables. See `.env.example` for all variables. `DB_PASSWORD` and `JWT_SECRET` are required.
+**Configuration**: Viper reads from `.env` file (workspace root or `rims-goProgect/`) and environment variables. See `.env.example` for all variables. `DB_PASSWORD` and `JWT_SECRET` are required. The `.env` file is committed to the repo (project is in early stage with dev-only credentials); do not add it to `.gitignore`.
 
 **Entry flow**: `cmd/server/main.go` → `internal/app.Run()` which loads config, connects DB, runs auto-migration if `DB_AUTO_MIGRATE=true`, builds the Gin router, and starts the HTTP server.
 
