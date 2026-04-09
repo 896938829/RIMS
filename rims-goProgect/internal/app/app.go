@@ -11,6 +11,7 @@ import (
 	"rims-go/internal/config"
 	"rims-go/internal/db"
 	"rims-go/internal/modules/user"
+	"rims-go/internal/modules/warehouse"
 )
 
 // @title RIMS API
@@ -38,6 +39,8 @@ func Run() error {
 			&user.Role{},
 			&user.Permission{},
 			&user.User{},
+			&warehouse.Warehouse{},
+			&warehouse.UserWarehouse{},
 		); err != nil {
 			return fmt.Errorf("auto migrate: %w", err)
 		}

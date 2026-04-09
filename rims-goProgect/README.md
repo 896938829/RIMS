@@ -21,7 +21,7 @@
 │  ┌───────────────────────────────────────────────┐  │
 │  │ Middleware Chain 中间件链                       │  │
 │  │ Recovery → RequestID → Logger → CORS           │  │
-│  │   → JWTAuth → Warehouse → Permission          │  │
+│  │   → JWTAuth → WarehouseScope → Permission     │  │
 │  └───────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────┐  │
 │  │ Modules 业务模块                               │  │
@@ -84,7 +84,7 @@ rims-goProgect/
 │   │   └── context.go              # Context 辅助函数 / Context helpers
 │   └── modules/
 │       ├── user/                   # ✅ 用户与认证 / User & Auth
-│       ├── warehouse/              # 🔲 仓库与权限 / Warehouse & Permission
+│       ├── warehouse/              # ✅ 仓库与权限 / Warehouse & Permission
 │       ├── product/                # 🔲 商品与库存 / Product & Inventory
 │       ├── document/               # 🔲 单据与流水 / Documents & Transactions
 │       ├── report/                 # 🔲 报表分析 / Reports & Analytics
@@ -103,7 +103,7 @@ rims-goProgect/
 | 模块 Module | 职责 Responsibility | 状态 Status |
 |---|---|---|
 | **user** 用户认证 | 登录、用户 CRUD、角色权限管理 / Login, user CRUD, role & permission management | ✅ |
-| **warehouse** 仓库权限 | 仓库管理、用户仓库绑定、仓库范围校验 / Warehouse CRUD, user binding, scope validation | 🔲 |
+| **warehouse** 仓库权限 | 仓库管理、用户仓库绑定、仓库范围校验 / Warehouse CRUD, user binding, scope validation | ✅ |
 | **product** 商品库存 | 商品档案、标准/非标库存、库存预警 / Product catalog, standard/non-standard inventory, alerts | 🔲 |
 | **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单 / Inbound, sales, return, transfer, stocktaking, conversion orders | 🔲 |
 | **report** 报表分析 | 销售统计、库存分析、排行趋势 / Sales stats, inventory analysis, rankings & trends | 🔲 |
@@ -166,6 +166,9 @@ cd rims-goProgect && go run ./cmd/server
 |---|---|---|
 | GET | `/api/v1/users/me` | 当前用户信息 / Current user info |
 | PUT | `/api/v1/users/me/password` | 修改密码 / Change password |
+| GET | `/api/v1/users/me/warehouses` | 我的仓库列表 / My warehouses |
+| PUT | `/api/v1/users/me/warehouses/default` | 设置默认仓库 / Set default warehouse |
+| PUT | `/api/v1/users/me/warehouses/current` | 切换当前仓库 / Switch current warehouse |
 | POST | `/api/v1/users` | 创建用户 / Create user |
 | GET | `/api/v1/users` | 用户列表 / List users |
 | GET | `/api/v1/users/:id` | 用户详情 / Get user |
@@ -184,6 +187,19 @@ cd rims-goProgect && go run ./cmd/server
 | DELETE | `/api/v1/roles/:id` | 删除角色 / Delete role |
 | PUT | `/api/v1/roles/:id/permissions` | 分配权限 / Assign permissions |
 | GET | `/api/v1/permissions` | 权限列表 / List permissions |
+
+### 仓库 Warehouses (需认证 / Auth Required)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/warehouses` | 创建仓库 / Create warehouse (admin) |
+| GET | `/api/v1/warehouses` | 仓库列表 / List warehouses |
+| GET | `/api/v1/warehouses/:id` | 仓库详情 / Get warehouse |
+| PUT | `/api/v1/warehouses/:id` | 更新仓库 / Update warehouse (admin) |
+| DELETE | `/api/v1/warehouses/:id` | 删除仓库 / Delete warehouse (admin) |
+| POST | `/api/v1/warehouses/:id/users` | 绑定用户 / Bind users (admin) |
+| DELETE | `/api/v1/warehouses/:id/users/:userId` | 解绑用户 / Unbind user (admin) |
+| GET | `/api/v1/warehouses/:id/users` | 仓库用户列表 / List warehouse users |
 
 ## 统一响应格式 / Unified Response Format
 

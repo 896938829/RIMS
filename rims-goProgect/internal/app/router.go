@@ -16,6 +16,7 @@ import (
 	"rims-go/internal/config"
 	"rims-go/internal/middleware"
 	"rims-go/internal/modules/user"
+	"rims-go/internal/modules/warehouse"
 )
 
 // buildRouter creates the Gin engine with all middleware and routes.
@@ -33,13 +34,20 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	// Repositories
 	userRepo := user.NewUserRepository(gormDB)
 	roleRepo := user.NewRoleRepository(gormDB)
+	warehouseRepo := warehouse.NewWarehouseRepository(gormDB)
+	userWarehouseRepo := warehouse.NewUserWarehouseRepository(gormDB)
 
 	// Services
 	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc)
 	roleSvc := user.NewRoleService(roleRepo)
+	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, gormDB)
 
 	// Handlers
 	userHandler := user.NewHandler(userSvc, roleSvc)
+	warehouseHandler := warehouse.NewHandler(warehouseSvc)
+
+	// Warehouse scope middleware (for future modules: product, document, etc.)
+	_ = middleware.WarehouseScope(userWarehouseRepo)
 
 	// Public endpoints
 	r.GET("/healthz", func(c *gin.Context) {
@@ -50,6 +58,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	// API v1
 	api := r.Group("/api/v1")
 	user.RegisterRoutes(api, userHandler, authMw)
+	warehouse.RegisterRoutes(api, warehouseHandler, authMw)
 
 	return r
 }
