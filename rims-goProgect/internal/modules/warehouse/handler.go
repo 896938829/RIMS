@@ -327,8 +327,9 @@ func parseID(c *gin.Context, param string) (uint, error) {
 	idStr := c.Param(param)
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil || id == 0 {
-		types.Fail(c, http.StatusBadRequest, types.ErrValidation("无效的ID"))
-		return 0, err
+		appErr := types.ErrValidation("无效的ID")
+		types.Fail(c, http.StatusBadRequest, appErr)
+		return 0, appErr
 	}
 	return uint(id), nil
 }

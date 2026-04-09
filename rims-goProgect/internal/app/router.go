@@ -14,6 +14,7 @@ import (
 	_ "rims-go/docs"
 	"rims-go/internal/auth"
 	"rims-go/internal/config"
+	"rims-go/internal/db"
 	"rims-go/internal/middleware"
 	"rims-go/internal/modules/user"
 	"rims-go/internal/modules/warehouse"
@@ -40,7 +41,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	// Services
 	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc)
 	roleSvc := user.NewRoleService(roleRepo)
-	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, gormDB)
+	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, db.NewTxRunner(gormDB))
 
 	// Handlers
 	userHandler := user.NewHandler(userSvc, roleSvc)

@@ -35,6 +35,9 @@ cd rims-goProgect && go test ./...
 # Run a single package's tests
 cd rims-goProgect && go test ./internal/modules/user/...
 
+# Build check
+cd rims-goProgect && go build ./...
+
 # Regenerate Swagger docs (after changing API annotations)
 cd rims-goProgect && swag init -g cmd/server/main.go -o docs
 ```
@@ -55,33 +58,37 @@ Each domain module lives in `internal/modules/<name>/` with a consistent layered
 
 | File | Role |
 |---|---|
-| `model.go` | GORM entities (embed `types.BaseModel` or `types.AuditableModel`) |
-| `dto.go` | Request/response structs with `binding` validation tags |
-| `repository.go` | Data access interface + GORM implementation; all methods take `context.Context` for transaction propagation |
-| `service.go` | Business logic; depends on repository interfaces (mockable) |
-| `handler.go` | Thin HTTP handlers with Swagger annotations; binds params → calls service → returns unified response |
+| `model.go` | GORM entities (embed `types.BaseModel` for system data or `types.AuditableModel` for business data with CreatedBy/UpdatedBy) |
+| `dto.go` | Request/response structs with `binding` validation tags; `ToXxxResponse()` converter functions |
+| `repository.go` | Data access interface + GORM implementation; all methods take `context.Context` for transaction propagation; use `db.FromCtx(ctx, r.gormDB)` |
+| `service.go` | Business logic; depends on repository interfaces (mockable); uses `db.RunInTx` for multi-repo transactions |
+| `handler.go` | Thin HTTP handlers with Swagger annotations (Chinese); binds params → calls service → returns via `types.OK`/`FailFromError`; includes local `parseID()` helper |
 | `routes.go` | `RegisterRoutes()` function for self-registering routes on a `gin.RouterGroup` |
 
-**Current modules**: `user` (auth, user CRUD, role & permission management). Planned: `warehouse`, `product`, `document`, `report`, `file`, `audit`.
+**Current modules**:
+- `user` — auth (login/JWT), user CRUD, role & permission management
+- `warehouse` — warehouse CRUD, user-warehouse binding (normal users: 1 warehouse; admins: multiple), default warehouse, warehouse switching, WarehouseScope middleware
+
+Planned: `product`, `document`, `report`, `file`, `audit`.
 
 ### Shared Infrastructure
 
 - `internal/types/` — Shared types used across all modules:
-  - `response.go`: Unified response envelope (`OK`, `Fail`, `FailFromError`, `OKWithPage`)
-  - `errors.go`: `AppError` type with business error codes (10001–50000) and `HTTPStatus()` mapping
-  - `pagination.go`: `PageRequest` / `PageResult` for paginated queries
+  - `response.go`: Unified response envelope (`OK`, `Fail`, `FailFromError`, `OKWithPage`, `OKCreated`, `OKNoContent`)
+  - `errors.go`: `AppError` type with business error codes (10001–50000) and `HTTPStatus()` mapping; constructors: `ErrAuth`, `ErrForbidden`, `ErrValidation`, `ErrNotFound`, `ErrDuplicate`, `ErrInvalidState`, `ErrSystem`
+  - `pagination.go`: `PageRequest` (with `Defaults()`, `Offset()`) / `PageResult` (via `NewPageResult()`) for paginated queries
   - `base_model.go`: `BaseModel` (ID, timestamps, soft delete) and `AuditableModel` (+ CreatedBy/UpdatedBy)
-  - `context.go`: Helpers to extract `userID`, `roleCode`, `warehouseID`, `traceID` from gin.Context
+  - `context.go`: Helpers to extract `userID`, `roleCode`, `warehouseID`, `traceID` from gin.Context; `IsAdmin()` check
 - `internal/auth/` — JWT `TokenService` (GenerateToken, ParseToken); Claims carry `UserID`, `Username`, `RoleID`, `RoleCode`
 - `internal/db/` — GORM connection (`db.go`) + transaction propagation (`tx.go`: `RunInTx`, `FromCtx`)
-- `internal/middleware/` — `JWTAuth`, `RequestID`, `Logger`, `CORS`; planned: `Warehouse`, `Permission`, `Idempotency`
+- `internal/middleware/` — `JWTAuth`, `RequestID`, `Logger`, `CORS`, `WarehouseScope`; planned: `Permission`, `Idempotency`
 - `internal/config/` — Viper-based config struct
 
 ### Cross-Module Interaction
 
-Modules interact through **interfaces defined by the consumer** (dependency inversion), wired in `internal/app/router.go` (the composition root). For example, the document module will define an `InventoryOperator` interface that the product module's service implements.
+Modules interact through **interfaces defined by the consumer** (dependency inversion), wired in `internal/app/router.go` (the composition root). To avoid cross-package model imports, use join queries returning flat structs (e.g., `WarehouseUserInfo` in the warehouse repo joins `users` table directly instead of importing the `user` package).
 
-**Transaction propagation**: `db.RunInTx(ctx, gormDB, func(txCtx) error { ... })` stores the `*gorm.DB` transaction in context. All repositories use `db.FromCtx(ctx, r.db)` to automatically participate in the active transaction.
+**Transaction propagation**: `db.RunInTx(ctx, gormDB, func(txCtx) error { ... })` stores the `*gorm.DB` transaction in context. All repositories use `db.FromCtx(ctx, r.gormDB)` to automatically participate in the active transaction.
 
 ### Middleware Chain
 
@@ -89,12 +96,21 @@ Modules interact through **interfaces defined by the consumer** (dependency inve
 Recovery → RequestID → Logger → CORS → [public routes] → JWTAuth → [protected routes]
 ```
 
-JWT middleware sets `userID`, `username`, `roleID`, `roleCode` in gin.Context. Future middleware: `Warehouse` (warehouse scope validation via `X-Warehouse-ID` header), `Permission` (RBAC check), `Idempotency` (write dedup).
+JWT middleware sets `userID`, `username`, `roleID`, `roleCode` in gin.Context. `WarehouseScope` middleware reads `X-Warehouse-ID` header (falls back to user's default warehouse), validates access, and sets `warehouseID` in context — currently wired but applied to future modules (product, document, etc.), not to warehouse management routes themselves.
 
-**API routes**: All under `/api/v1`. Public: `POST /auth/login`. Protected: `/users`, `/roles`, `/permissions` CRUD.
+**API routes**: All under `/api/v1`. Public: `POST /auth/login`. Protected: `/users`, `/roles`, `/permissions`, `/warehouses` CRUD + user-warehouse binding.
 
 **Swagger UI**: available at `/swagger/index.html` when the server is running.
 
-**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` creates users/roles/permissions tables and seeds default admin. GORM AutoMigrate also runs at startup for convenience.
+**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` (users/roles/permissions + seed admin), `000002_warehouse.sql` (warehouses/user_warehouses + seed default warehouse). GORM AutoMigrate also runs at startup for convenience.
 
 **Docker**: `deploy/docker-compose.yml` runs PostgreSQL 16, reads env vars from workspace root `.env`.
+
+### Adding a New Module
+
+1. Create `internal/modules/<name>/` with the 6 standard files (model, dto, repository, service, handler, routes)
+2. Add SQL migration in `migrations/` (next sequential number)
+3. Add models to `AutoMigrate()` in `internal/app/app.go`
+4. Wire repos → services → handlers in `internal/app/router.go` and call `<module>.RegisterRoutes()`
+5. Admin-only checks go in the handler via `types.IsAdmin(c)`, not in middleware
+6. Run `go build ./...` and `go test ./...` to verify

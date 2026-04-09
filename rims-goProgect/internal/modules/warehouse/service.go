@@ -18,19 +18,19 @@ import (
 type WarehouseService struct {
 	warehouseRepo     WarehouseRepository
 	userWarehouseRepo UserWarehouseRepository
-	gormDB            *gorm.DB
+	txRunner          db.TxRunner
 }
 
 // NewWarehouseService creates a new WarehouseService.
 func NewWarehouseService(
 	warehouseRepo WarehouseRepository,
 	userWarehouseRepo UserWarehouseRepository,
-	gormDB *gorm.DB,
+	txRunner db.TxRunner,
 ) *WarehouseService {
 	return &WarehouseService{
 		warehouseRepo:     warehouseRepo,
 		userWarehouseRepo: userWarehouseRepo,
-		gormDB:            gormDB,
+		txRunner:          txRunner,
 	}
 }
 
@@ -167,7 +167,7 @@ func (s *WarehouseService) Delete(ctx context.Context, id uint) error {
 		return types.ErrSystem(err)
 	}
 
-	return db.RunInTx(ctx, s.gormDB, func(txCtx context.Context) error {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
 		if err := s.userWarehouseRepo.DeleteByWarehouseID(txCtx, id); err != nil {
 			return types.ErrSystem(err)
 		}
@@ -191,7 +191,7 @@ func (s *WarehouseService) BindUsers(ctx context.Context, warehouseID uint, req 
 		return types.ErrInvalidState("仓库已禁用")
 	}
 
-	return db.RunInTx(ctx, s.gormDB, func(txCtx context.Context) error {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
 		for _, uid := range req.UserIDs {
 			// Skip if already bound
 			existing, err := s.userWarehouseRepo.GetByUserAndWarehouse(txCtx, uid, warehouseID)
@@ -248,7 +248,7 @@ func (s *WarehouseService) UnbindUser(ctx context.Context, warehouseID, userID u
 
 	wasDefault := binding.IsDefault
 
-	return db.RunInTx(ctx, s.gormDB, func(txCtx context.Context) error {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
 		if err := s.userWarehouseRepo.Delete(txCtx, userID, warehouseID); err != nil {
 			return types.ErrSystem(err)
 		}
@@ -309,7 +309,7 @@ func (s *WarehouseService) SetDefaultWarehouse(ctx context.Context, userID uint,
 		return types.ErrSystem(err)
 	}
 
-	return db.RunInTx(ctx, s.gormDB, func(txCtx context.Context) error {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
 		if err := s.userWarehouseRepo.ClearDefault(txCtx, userID); err != nil {
 			return types.ErrSystem(err)
 		}
