@@ -85,7 +85,7 @@ rims-goProgect/
 │   └── modules/
 │       ├── user/                   # ✅ 用户与认证 / User & Auth
 │       ├── warehouse/              # ✅ 仓库与权限 / Warehouse & Permission
-│       ├── product/                # 🔲 商品与库存 / Product & Inventory
+│       ├── product/                # ✅ 商品与库存 / Product & Inventory
 │       ├── document/               # 🔲 单据与流水 / Documents & Transactions
 │       ├── report/                 # 🔲 报表分析 / Reports & Analytics
 │       ├── file/                   # 🔲 文件附件 / File & Attachment
@@ -104,7 +104,7 @@ rims-goProgect/
 |---|---|---|
 | **user** 用户认证 | 登录、用户 CRUD、角色权限管理 / Login, user CRUD, role & permission management | ✅ |
 | **warehouse** 仓库权限 | 仓库管理、用户仓库绑定、仓库范围校验 / Warehouse CRUD, user binding, scope validation | ✅ |
-| **product** 商品库存 | 商品档案、标准/非标库存、库存预警 / Product catalog, standard/non-standard inventory, alerts | 🔲 |
+| **product** 商品库存 | 商品档案、标准/非标库存、库存预警、非标转标准 / Product catalog, standard/non-standard inventory, alerts, non-std conversion | ✅ |
 | **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单 / Inbound, sales, return, transfer, stocktaking, conversion orders | 🔲 |
 | **report** 报表分析 | 销售统计、库存分析、排行趋势 / Sales stats, inventory analysis, rankings & trends | 🔲 |
 | **file** 文件附件 | 图片上传、附件管理 / Image upload, attachment management | 🔲 |
@@ -187,6 +187,37 @@ cd rims-goProgect && go run ./cmd/server
 | DELETE | `/api/v1/roles/:id` | 删除角色 / Delete role |
 | PUT | `/api/v1/roles/:id/permissions` | 分配权限 / Assign permissions |
 | GET | `/api/v1/permissions` | 权限列表 / List permissions |
+
+### 商品 Products (需认证 / Auth Required)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/products` | 创建商品 / Create product (admin) |
+| GET | `/api/v1/products` | 商品列表 / List products |
+| GET | `/api/v1/products/:id` | 商品详情 / Get product |
+| GET | `/api/v1/products/barcode/:barcode` | 条码查询 / Get product by barcode |
+| PUT | `/api/v1/products/:id` | 更新商品 / Update product (admin) |
+| DELETE | `/api/v1/products/:id` | 删除商品 / Delete product (admin) |
+
+### 标准库存 Inventory (需认证+仓库范围 / Auth + Warehouse Scope)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/inventory` | 库存列表 / List inventory |
+| GET | `/api/v1/inventory/alerts` | 库存预警 / Low stock alerts |
+| GET | `/api/v1/inventory/:id` | 库存详情 / Get inventory |
+| PUT | `/api/v1/inventory/:id` | 更新库存设置 / Update inventory settings (admin) |
+
+### 非标库存 Non-Std Inventory (需认证+仓库范围+管理员 / Auth + Warehouse Scope + Admin)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/non-std-inventory` | 创建非标库存 / Create non-std inventory |
+| GET | `/api/v1/non-std-inventory` | 非标库存列表 / List non-std inventory |
+| GET | `/api/v1/non-std-inventory/:id` | 非标库存详情 / Get non-std inventory |
+| PUT | `/api/v1/non-std-inventory/:id` | 更新非标库存 / Update non-std inventory |
+| DELETE | `/api/v1/non-std-inventory/:id` | 删除非标库存 / Delete non-std inventory |
+| POST | `/api/v1/non-std-inventory/:id/convert` | 非标转标准 / Convert to standard inventory |
 
 ### 仓库 Warehouses (需认证 / Auth Required)
 

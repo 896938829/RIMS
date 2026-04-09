@@ -16,6 +16,7 @@ import (
 	"rims-go/internal/config"
 	"rims-go/internal/db"
 	"rims-go/internal/middleware"
+	"rims-go/internal/modules/product"
 	"rims-go/internal/modules/user"
 	"rims-go/internal/modules/warehouse"
 )
@@ -47,8 +48,15 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	userHandler := user.NewHandler(userSvc, roleSvc)
 	warehouseHandler := warehouse.NewHandler(warehouseSvc)
 
-	// Warehouse scope middleware (for future modules: product, document, etc.)
-	_ = middleware.WarehouseScope(userWarehouseRepo)
+	// Warehouse scope middleware
+	whScope := middleware.WarehouseScope(userWarehouseRepo)
+
+	// Product module
+	productRepo := product.NewProductRepository(gormDB)
+	inventoryRepo := product.NewInventoryRepository(gormDB)
+	nonStdRepo := product.NewNonStdInventoryRepository(gormDB)
+	productSvc := product.NewProductService(productRepo, inventoryRepo, nonStdRepo, db.NewTxRunner(gormDB))
+	productHandler := product.NewHandler(productSvc)
 
 	// Public endpoints
 	r.GET("/healthz", func(c *gin.Context) {
@@ -60,6 +68,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	api := r.Group("/api/v1")
 	user.RegisterRoutes(api, userHandler, authMw)
 	warehouse.RegisterRoutes(api, warehouseHandler, authMw)
+	product.RegisterRoutes(api, productHandler, authMw, whScope)
 
 	return r
 }
