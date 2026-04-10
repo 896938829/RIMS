@@ -86,7 +86,7 @@ rims-goProgect/
 │       ├── user/                   # ✅ 用户与认证 / User & Auth
 │       ├── warehouse/              # ✅ 仓库与权限 / Warehouse & Permission
 │       ├── product/                # ✅ 商品与库存 / Product & Inventory
-│       ├── document/               # 🔲 单据与流水 / Documents & Transactions
+│       ├── document/               # ✅ 单据与流水 / Documents & Transactions
 │       ├── report/                 # 🔲 报表分析 / Reports & Analytics
 │       ├── file/                   # 🔲 文件附件 / File & Attachment
 │       └── audit/                  # 🔲 审计日志 / Audit & Log
@@ -105,7 +105,7 @@ rims-goProgect/
 | **user** 用户认证 | 登录、用户 CRUD、角色权限管理 / Login, user CRUD, role & permission management | ✅ |
 | **warehouse** 仓库权限 | 仓库管理、用户仓库绑定、仓库范围校验 / Warehouse CRUD, user binding, scope validation | ✅ |
 | **product** 商品库存 | 商品档案、标准/非标库存、库存预警、非标转标准 / Product catalog, standard/non-standard inventory, alerts, non-std conversion | ✅ |
-| **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单 / Inbound, sales, return, transfer, stocktaking, conversion orders | 🔲 |
+| **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单、库存流水 / Inbound, sales, return, transfer, stocktaking, conversion orders & inventory transactions | ✅ |
 | **report** 报表分析 | 销售统计、库存分析、排行趋势 / Sales stats, inventory analysis, rankings & trends | 🔲 |
 | **file** 文件附件 | 图片上传、附件管理 / Image upload, attachment management | 🔲 |
 | **audit** 审计日志 | 操作审计、日志查询 / Operation audit, log queries | 🔲 |
@@ -231,6 +231,23 @@ cd rims-goProgect && go run ./cmd/server
 | POST | `/api/v1/warehouses/:id/users` | 绑定用户 / Bind users (admin) |
 | DELETE | `/api/v1/warehouses/:id/users/:userId` | 解绑用户 / Unbind user (admin) |
 | GET | `/api/v1/warehouses/:id/users` | 仓库用户列表 / List warehouse users |
+
+### 单据 Documents (需认证+仓库范围 / Auth + Warehouse Scope)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/documents` | 创建单据 / Create document |
+| GET | `/api/v1/documents` | 单据列表 / List documents |
+| GET | `/api/v1/documents/:id` | 单据详情 / Get document detail |
+| POST | `/api/v1/documents/:id/complete` | 完成单据 / Complete document |
+| POST | `/api/v1/documents/:id/confirm` | 确认盘点差异 / Confirm stocktake (admin) |
+| POST | `/api/v1/documents/:id/settle` | 盘点结转 / Settle stocktake (admin) |
+
+### 库存流水 Transactions (需认证+仓库范围 / Auth + Warehouse Scope)
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/transactions` | 库存流水列表 / List inventory transactions |
 
 ## 统一响应格式 / Unified Response Format
 

@@ -70,7 +70,9 @@ Each domain module lives in `internal/modules/<name>/` with a consistent layered
 - `warehouse` — warehouse CRUD, user-warehouse binding (normal users: 1 warehouse; admins: multiple), default warehouse, warehouse switching, WarehouseScope middleware
 - `product` — product catalog (global CRUD, barcode lookup, admin-only cost price), standard inventory (per-warehouse, alert threshold), non-standard inventory (admin-only CRUD, partial/full conversion to standard)
 
-Planned: `document`, `report`, `file`, `audit`.
+- `document` — business documents (inbound/sales/return/transfer/stocktake/conversion), document lines, inventory transaction log; polymorphic `documents` table with `doc_type` discriminator; `CompleteDocument` executes inventory changes transactionally; stocktake has 3-step flow (recording→confirmed→settled); cross-module: imports `product.InventoryRepository`/`ProductRepository`/`NonStdInventoryRepository` for inventory operations
+
+Planned: `report`, `file`, `audit`.
 
 ### Shared Infrastructure
 
@@ -97,13 +99,13 @@ Modules interact through **interfaces defined by the consumer** (dependency inve
 Recovery → RequestID → Logger → CORS → [public routes] → JWTAuth → [protected routes]
 ```
 
-JWT middleware sets `userID`, `username`, `roleID`, `roleCode` in gin.Context. `WarehouseScope` middleware reads `X-Warehouse-ID` header (falls back to user's default warehouse), validates access, and sets `warehouseID` in context — applied to inventory and non-std-inventory routes (product module), not to warehouse management or product catalog routes.
+JWT middleware sets `userID`, `username`, `roleID`, `roleCode` in gin.Context. `WarehouseScope` middleware reads `X-Warehouse-ID` header (falls back to user's default warehouse), validates access, and sets `warehouseID` in context — applied to inventory, non-std-inventory, documents, and transactions routes.
 
-**API routes**: All under `/api/v1`. Public: `POST /auth/login`. Protected: `/users`, `/roles`, `/permissions`, `/warehouses` CRUD + user-warehouse binding, `/products` CRUD + barcode lookup, `/inventory` list/alerts/update (warehouse-scoped), `/non-std-inventory` CRUD + convert (warehouse-scoped, admin-only).
+**API routes**: All under `/api/v1`. Public: `POST /auth/login`. Protected: `/users`, `/roles`, `/permissions`, `/warehouses` CRUD + user-warehouse binding, `/products` CRUD + barcode lookup, `/inventory` list/alerts/update (warehouse-scoped), `/non-std-inventory` CRUD + convert (warehouse-scoped, admin-only), `/documents` CRUD + complete/confirm/settle (warehouse-scoped), `/transactions` list (warehouse-scoped).
 
 **Swagger UI**: available at `/swagger/index.html` when the server is running.
 
-**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` (users/roles/permissions + seed admin), `000002_warehouse.sql` (warehouses/user_warehouses + seed default warehouse), `000003_product.sql` (products/inventories/non_std_inventories). GORM AutoMigrate also runs at startup for convenience.
+**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` (users/roles/permissions + seed admin), `000002_warehouse.sql` (warehouses/user_warehouses + seed default warehouse), `000003_product.sql` (products/inventories/non_std_inventories), `000004_document.sql` (documents/document_lines/inventory_transactions). GORM AutoMigrate also runs at startup for convenience.
 
 **Docker**: `deploy/docker-compose.yml` runs PostgreSQL 16, reads env vars from workspace root `.env`.
 
