@@ -18,6 +18,7 @@ import (
 	"rims-go/internal/middleware"
 	"rims-go/internal/modules/document"
 	"rims-go/internal/modules/product"
+	"rims-go/internal/modules/report"
 	"rims-go/internal/modules/user"
 	"rims-go/internal/modules/warehouse"
 )
@@ -70,6 +71,11 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	)
 	docHandler := document.NewHandler(docSvc)
 
+	// Report module
+	reportRepo := report.NewReportRepository(gormDB)
+	reportSvc := report.NewReportService(reportRepo)
+	reportHandler := report.NewHandler(reportSvc)
+
 	// Public endpoints
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -82,6 +88,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	warehouse.RegisterRoutes(api, warehouseHandler, authMw)
 	product.RegisterRoutes(api, productHandler, authMw, whScope)
 	document.RegisterRoutes(api, docHandler, authMw, whScope)
+	report.RegisterRoutes(api, reportHandler, authMw, whScope)
 
 	return r
 }
