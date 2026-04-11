@@ -1,5 +1,642 @@
+basePath: /
 definitions:
-  authapi.LoginInput:
+  internal_modules_audit.AuditLogResponse:
+    properties:
+      action:
+        type: string
+      createdAt:
+        type: string
+      description:
+        type: string
+      details:
+        additionalProperties: {}
+        type: object
+      docNo:
+        type: string
+      errorCode:
+        type: integer
+      errorMsg:
+        type: string
+      id:
+        type: integer
+      ipAddress:
+        type: string
+      resource:
+        type: string
+      resourceId:
+        type: integer
+      result:
+        type: string
+      roleCode:
+        type: string
+      traceId:
+        type: string
+      userAgent:
+        type: string
+      userId:
+        type: integer
+      username:
+        type: string
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_document.CreateDocumentLineRequest:
+    properties:
+      actualQty:
+        type: integer
+      costPrice:
+        type: number
+      nonStdInvId:
+        type: integer
+      productId:
+        type: integer
+      quantity:
+        minimum: 0
+        type: integer
+      remark:
+        maxLength: 255
+        type: string
+      retailPrice:
+        type: number
+    type: object
+  internal_modules_document.CreateDocumentRequest:
+    properties:
+      docType:
+        enum:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        type: integer
+      lines:
+        items:
+          $ref: '#/definitions/internal_modules_document.CreateDocumentLineRequest'
+        minItems: 1
+        type: array
+      refDocId:
+        type: integer
+      remark:
+        maxLength: 512
+        type: string
+      toWarehouseId:
+        type: integer
+    required:
+    - docType
+    - lines
+    type: object
+  internal_modules_document.DocumentDetailResponse:
+    properties:
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      docNo:
+        type: string
+      docType:
+        type: integer
+      docTypeName:
+        type: string
+      id:
+        type: integer
+      lines:
+        items:
+          $ref: '#/definitions/internal_modules_document.DocumentLineResponse'
+        type: array
+      operatedAt:
+        type: string
+      refDocId:
+        type: integer
+      refDocNo:
+        type: string
+      remark:
+        type: string
+      status:
+        type: integer
+      statusName:
+        type: string
+      toWarehouseId:
+        type: integer
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_document.DocumentLineResponse:
+    properties:
+      actualQty:
+        type: integer
+      costPrice:
+        type: number
+      diffQty:
+        type: integer
+      id:
+        type: integer
+      nonStdInvId:
+        type: integer
+      productCode:
+        type: string
+      productId:
+        type: integer
+      productName:
+        type: string
+      quantity:
+        type: integer
+      remark:
+        type: string
+      retailPrice:
+        type: number
+      systemQty:
+        type: integer
+      unit:
+        type: string
+    type: object
+  internal_modules_document.DocumentResponse:
+    properties:
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      docNo:
+        type: string
+      docType:
+        type: integer
+      docTypeName:
+        type: string
+      id:
+        type: integer
+      operatedAt:
+        type: string
+      refDocId:
+        type: integer
+      refDocNo:
+        type: string
+      remark:
+        type: string
+      status:
+        type: integer
+      statusName:
+        type: string
+      toWarehouseId:
+        type: integer
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_file.FileResponse:
+    properties:
+      businessId:
+        type: integer
+      businessType:
+        type: string
+      createdBy:
+        type: integer
+      fileHash:
+        type: string
+      fileSize:
+        type: integer
+      fileUrl:
+        type: string
+      id:
+        type: integer
+      isPublic:
+        type: boolean
+      mimeType:
+        type: string
+      objectKey:
+        description: admin-only
+        type: string
+      originalName:
+        type: string
+      uploadedAt:
+        type: string
+    type: object
+  internal_modules_product.AdminProductResponse:
+    properties:
+      barcode:
+        type: string
+      category:
+        type: string
+      code:
+        type: string
+      costPrice:
+        type: number
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      id:
+        type: integer
+      imageUrl:
+        type: string
+      name:
+        type: string
+      retailPrice:
+        type: number
+      spec:
+        type: string
+      status:
+        type: integer
+      unit:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+    type: object
+  internal_modules_product.ConvertNonStdRequest:
+    properties:
+      productId:
+        type: integer
+      quantity:
+        minimum: 1
+        type: integer
+    required:
+    - productId
+    - quantity
+    type: object
+  internal_modules_product.CreateNonStdInventoryRequest:
+    properties:
+      description:
+        maxLength: 255
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+      sourceDocument:
+        maxLength: 64
+        type: string
+      sourceMethod:
+        maxLength: 32
+        type: string
+      tempLabel:
+        maxLength: 64
+        type: string
+      unit:
+        maxLength: 16
+        type: string
+    required:
+    - description
+    - quantity
+    - tempLabel
+    - unit
+    type: object
+  internal_modules_product.CreateProductRequest:
+    properties:
+      barcode:
+        maxLength: 64
+        type: string
+      category:
+        maxLength: 64
+        type: string
+      code:
+        maxLength: 32
+        minLength: 2
+        type: string
+      costPrice:
+        minimum: 0
+        type: number
+      imageUrl:
+        maxLength: 512
+        type: string
+      name:
+        maxLength: 128
+        type: string
+      retailPrice:
+        minimum: 0
+        type: number
+      spec:
+        maxLength: 128
+        type: string
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+      unit:
+        maxLength: 16
+        type: string
+    required:
+    - code
+    - name
+    - unit
+    type: object
+  internal_modules_product.InventoryResponse:
+    properties:
+      alertThreshold:
+        type: integer
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      id:
+        type: integer
+      lockedQty:
+        type: integer
+      product:
+        $ref: '#/definitions/internal_modules_product.ProductResponse'
+      productId:
+        type: integer
+      quantity:
+        type: integer
+      status:
+        type: integer
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_product.NonStdInventoryResponse:
+    properties:
+      convertedQty:
+        type: integer
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      description:
+        type: string
+      id:
+        type: integer
+      quantity:
+        type: integer
+      remainingQty:
+        type: integer
+      sourceDocument:
+        type: string
+      sourceMethod:
+        type: string
+      status:
+        type: integer
+      tempLabel:
+        type: string
+      unit:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_product.ProductResponse:
+    properties:
+      barcode:
+        type: string
+      category:
+        type: string
+      code:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      id:
+        type: integer
+      imageUrl:
+        type: string
+      name:
+        type: string
+      retailPrice:
+        type: number
+      spec:
+        type: string
+      status:
+        type: integer
+      unit:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+    type: object
+  internal_modules_product.UpdateInventoryRequest:
+    properties:
+      alertThreshold:
+        minimum: 0
+        type: integer
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+    type: object
+  internal_modules_product.UpdateNonStdInventoryRequest:
+    properties:
+      description:
+        maxLength: 255
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+      sourceDocument:
+        maxLength: 64
+        type: string
+      sourceMethod:
+        maxLength: 32
+        type: string
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+    type: object
+  internal_modules_product.UpdateProductRequest:
+    properties:
+      barcode:
+        maxLength: 64
+        type: string
+      category:
+        maxLength: 64
+        type: string
+      costPrice:
+        minimum: 0
+        type: number
+      imageUrl:
+        maxLength: 512
+        type: string
+      name:
+        maxLength: 128
+        type: string
+      retailPrice:
+        minimum: 0
+        type: number
+      spec:
+        maxLength: 128
+        type: string
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+      unit:
+        maxLength: 16
+        type: string
+    type: object
+  internal_modules_report.InventoryOverviewResponse:
+    properties:
+      lowStockCount:
+        type: integer
+      skuCount:
+        type: integer
+      totalQty:
+        type: integer
+      totalValue:
+        description: admin-only
+        type: number
+    type: object
+  internal_modules_report.ProductRankItem:
+    properties:
+      amount:
+        type: number
+      grossProfit:
+        type: number
+      productCode:
+        type: string
+      productId:
+        type: integer
+      productName:
+        type: string
+      quantity:
+        type: integer
+    type: object
+  internal_modules_report.ProductRankResponse:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/internal_modules_report.ProductRankItem'
+        type: array
+    type: object
+  internal_modules_report.SalesStatResponse:
+    properties:
+      costAmount:
+        description: admin-only
+        type: number
+      grossProfit:
+        description: admin-only
+        type: number
+      orderCount:
+        type: integer
+      quantity:
+        type: integer
+      revenue:
+        type: number
+      skuCount:
+        type: integer
+    type: object
+  internal_modules_report.SalesTrendPoint:
+    properties:
+      orderCount:
+        type: integer
+      period:
+        type: string
+      quantity:
+        type: integer
+      revenue:
+        type: number
+    type: object
+  internal_modules_report.SalesTrendResponse:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/internal_modules_report.SalesTrendPoint'
+        type: array
+    type: object
+  internal_modules_report.TurnoverItem:
+    properties:
+      avgStock:
+        type: number
+      outboundQty:
+        type: integer
+      productCode:
+        type: string
+      productId:
+        type: integer
+      productName:
+        type: string
+      turnoverRate:
+        type: number
+    type: object
+  internal_modules_report.TurnoverResponse:
+    properties:
+      list:
+        items:
+          $ref: '#/definitions/internal_modules_report.TurnoverItem'
+        type: array
+    type: object
+  internal_modules_user.AssignPermissionsRequest:
+    properties:
+      permissionIds:
+        items:
+          type: integer
+        minItems: 1
+        type: array
+    required:
+    - permissionIds
+    type: object
+  internal_modules_user.ChangePasswordRequest:
+    properties:
+      newPassword:
+        maxLength: 72
+        minLength: 6
+        type: string
+      oldPassword:
+        type: string
+    required:
+    - newPassword
+    - oldPassword
+    type: object
+  internal_modules_user.CreateRoleRequest:
+    properties:
+      code:
+        maxLength: 32
+        minLength: 2
+        type: string
+      description:
+        maxLength: 255
+        type: string
+      name:
+        maxLength: 64
+        type: string
+    required:
+    - code
+    - name
+    type: object
+  internal_modules_user.CreateUserRequest:
+    properties:
+      email:
+        maxLength: 128
+        type: string
+      password:
+        maxLength: 72
+        minLength: 6
+        type: string
+      phone:
+        maxLength: 20
+        type: string
+      realName:
+        maxLength: 64
+        type: string
+      roleId:
+        type: integer
+      username:
+        maxLength: 64
+        minLength: 3
+        type: string
+    required:
+    - password
+    - roleId
+    - username
+    type: object
+  internal_modules_user.LoginRequest:
     properties:
       password:
         type: string
@@ -9,125 +646,672 @@ definitions:
     - password
     - username
     type: object
-  todo.CreateTodoInput:
+  internal_modules_user.LoginResponse:
     properties:
-      title:
+      expiresAt:
+        type: integer
+      token:
+        type: string
+      user:
+        $ref: '#/definitions/internal_modules_user.UserBrief'
+    type: object
+  internal_modules_user.PermissionResponse:
+    properties:
+      action:
+        type: string
+      code:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      resource:
+        type: string
+    type: object
+  internal_modules_user.ResetPasswordRequest:
+    properties:
+      newPassword:
+        maxLength: 72
+        minLength: 6
         type: string
     required:
-    - title
+    - newPassword
     type: object
-  todo.Todo:
+  internal_modules_user.RoleResponse:
+    properties:
+      code:
+        type: string
+      createdAt:
+        type: string
+      description:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      permissions:
+        items:
+          $ref: '#/definitions/internal_modules_user.PermissionResponse'
+        type: array
+    type: object
+  internal_modules_user.UpdateRoleRequest:
+    properties:
+      description:
+        maxLength: 255
+        type: string
+      name:
+        maxLength: 64
+        type: string
+    type: object
+  internal_modules_user.UpdateUserRequest:
+    properties:
+      email:
+        maxLength: 128
+        type: string
+      phone:
+        maxLength: 20
+        type: string
+      realName:
+        maxLength: 64
+        type: string
+      roleId:
+        type: integer
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+    type: object
+  internal_modules_user.UserBrief:
+    properties:
+      id:
+        type: integer
+      realName:
+        type: string
+      roleCode:
+        type: string
+      roleName:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_modules_user.UserResponse:
     properties:
       createdAt:
         type: string
-      done:
-        type: boolean
+      email:
+        type: string
       id:
         type: integer
-      title:
+      phone:
         type: string
+      realName:
+        type: string
+      roleCode:
+        type: string
+      roleId:
+        type: integer
+      roleName:
+        type: string
+      status:
+        type: integer
       updatedAt:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_modules_warehouse.BindUsersRequest:
+    properties:
+      userIds:
+        items:
+          type: integer
+        minItems: 1
+        type: array
+    required:
+    - userIds
+    type: object
+  internal_modules_warehouse.CreateWarehouseRequest:
+    properties:
+      address:
+        maxLength: 255
+        type: string
+      code:
+        maxLength: 32
+        minLength: 2
+        type: string
+      contactPerson:
+        maxLength: 64
+        type: string
+      contactPhone:
+        maxLength: 20
+        type: string
+      name:
+        maxLength: 128
+        type: string
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+    required:
+    - code
+    - name
+    type: object
+  internal_modules_warehouse.SetDefaultWarehouseRequest:
+    properties:
+      warehouseId:
+        type: integer
+    required:
+    - warehouseId
+    type: object
+  internal_modules_warehouse.SwitchWarehouseRequest:
+    properties:
+      warehouseId:
+        type: integer
+    required:
+    - warehouseId
+    type: object
+  internal_modules_warehouse.UpdateWarehouseRequest:
+    properties:
+      address:
+        maxLength: 255
+        type: string
+      contactPerson:
+        maxLength: 64
+        type: string
+      contactPhone:
+        maxLength: 20
+        type: string
+      name:
+        maxLength: 128
+        type: string
+      status:
+        enum:
+        - 0
+        - 1
+        type: integer
+    type: object
+  internal_modules_warehouse.UserWarehouseResponse:
+    properties:
+      id:
+        type: integer
+      isDefault:
+        type: boolean
+      warehouse:
+        $ref: '#/definitions/internal_modules_warehouse.WarehouseResponse'
+      warehouseId:
+        type: integer
+    type: object
+  internal_modules_warehouse.WarehouseResponse:
+    properties:
+      address:
+        type: string
+      code:
+        type: string
+      contactPerson:
+        type: string
+      contactPhone:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: integer
+      id:
+        type: integer
+      name:
+        type: string
+      status:
+        type: integer
+      updatedAt:
+        type: string
+      updatedBy:
+        type: integer
+    type: object
+  rims-go_internal_types.PageResult:
+    properties:
+      list: {}
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      total:
+        type: integer
+    type: object
+  rims-go_internal_types.Response:
+    properties:
+      code:
+        type: integer
+      data: {}
+      message:
+        type: string
+      traceId:
         type: string
     type: object
 info:
   contact: {}
+  description: 零售端库存管理系统 API
+  title: RIMS API
+  version: "1.0"
 paths:
+  /api/v1/audit/logs:
+    get:
+      description: 分页查询审计日志，支持按用户/仓库/资源/动作/单据号/时间范围过滤。仅管理员可访问。
+      parameters:
+      - description: 操作人ID
+        in: query
+        name: userId
+        type: integer
+      - description: 仓库ID
+        in: query
+        name: warehouseId
+        type: integer
+      - description: 资源类型 (user/role/warehouse/product/inventory/non_std_inventory/document/file)
+        in: query
+        name: resource
+        type: string
+      - description: 资源ID
+        in: query
+        name: resourceId
+        type: integer
+      - description: 动作 (login/create/update/delete/complete/confirm/settle/convert/bind/unbind/assign)
+        in: query
+        name: action
+        type: string
+      - description: 单据号
+        in: query
+        name: docNo
+        type: string
+      - description: 结果 (success/failure)
+        in: query
+        name: result
+        type: string
+      - description: 起始时间 (RFC3339 或 YYYY-MM-DD)
+        in: query
+        name: startTime
+        type: string
+      - description: 结束时间 (RFC3339 或 YYYY-MM-DD)
+        in: query
+        name: endTime
+        type: string
+      - description: 描述/用户名/单据号关键字
+        in: query
+        name: keyword
+        type: string
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 审计日志列表
+      tags:
+      - 审计
+  /api/v1/audit/logs/{id}:
+    get:
+      description: 获取单条审计日志的完整内容（含 details JSON）。仅管理员可访问。
+      parameters:
+      - description: 审计日志ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_audit.AuditLogResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 审计日志详情
+      tags:
+      - 审计
   /api/v1/auth/login:
     post:
       consumes:
       - application/json
-      description: Returns JWT when username/password match demo credentials
       parameters:
-      - description: login payload
+      - description: 登录凭证
         in: body
         name: payload
         required: true
         schema:
-          $ref: '#/definitions/authapi.LoginInput'
+          $ref: '#/definitions/internal_modules_user.LoginRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            additionalProperties:
-              type: string
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.LoginResponse'
+              type: object
         "401":
           description: Unauthorized
           schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: Demo login
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      summary: 用户登录
       tags:
-      - auth
-  /api/v1/todos:
+      - 认证
+  /api/v1/documents:
     get:
+      description: 分页查询当前仓库的单据，可按类型筛选
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据类型 1=入库 2=销售 3=退货 4=调拨 5=盘点 6=转换
+        in: query
+        name: docType
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索单据号
+        in: query
+        name: keyword
+        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            items:
-              $ref: '#/definitions/todo.Todo'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
       security:
       - BearerAuth: []
-      summary: List todos
+      summary: 单据列表
       tags:
-      - todos
+      - 单据
     post:
       consumes:
       - application/json
+      description: 创建草稿单据（入库/销售/退货/调拨/盘点/转换）
       parameters:
-      - description: todo payload
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据信息
         in: body
         name: payload
         required: true
         schema:
-          $ref: '#/definitions/todo.CreateTodoInput'
+          $ref: '#/definitions/internal_modules_document.CreateDocumentRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/todo.Todo'
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_document.DocumentResponse'
+              type: object
         "400":
           description: Bad Request
           schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
           schema:
-            additionalProperties:
-              type: string
-            type: object
+            $ref: '#/definitions/rims-go_internal_types.Response'
       security:
       - BearerAuth: []
-      summary: Create todo
+      summary: 创建单据
       tags:
-      - todos
-  /api/v1/todos/{id}:
+      - 单据
+  /api/v1/documents/{id}:
+    get:
+      description: 获取单据及其明细行
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_document.DocumentDetailResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 单据详情
+      tags:
+      - 单据
+  /api/v1/documents/{id}/complete:
+    post:
+      description: 执行单据并更新库存（入库/销售/退货/调拨/转换）
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 完成单据
+      tags:
+      - 单据
+  /api/v1/documents/{id}/confirm:
+    post:
+      description: 将盘点单从"盘点中"转为"差异已确认"
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 确认盘点差异
+      tags:
+      - 单据
+  /api/v1/documents/{id}/settle:
+    post:
+      description: 将已确认的盘点单结转，应用库存差异
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 单据ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 盘点结转
+      tags:
+      - 单据
+  /api/v1/files:
+    get:
+      parameters:
+      - description: 业务类型
+        in: query
+        name: businessType
+        type: string
+      - description: 业务对象ID
+        in: query
+        name: businessId
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 文件列表
+      tags:
+      - 文件
+  /api/v1/files/{id}:
     delete:
       parameters:
-      - description: todo id
+      - description: 文件ID
         in: path
         name: id
         required: true
@@ -135,26 +1319,22 @@ paths:
       responses:
         "204":
           description: No Content
-        "400":
-          description: Bad Request
+        "403":
+          description: Forbidden
           schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
           schema:
-            additionalProperties:
-              type: string
-            type: object
+            $ref: '#/definitions/rims-go_internal_types.Response'
       security:
       - BearerAuth: []
-      summary: Delete todo by id
+      summary: 删除文件
       tags:
-      - todos
+      - 文件
     get:
       parameters:
-      - description: todo id
+      - description: 文件ID
         in: path
         name: id
         required: true
@@ -165,22 +1345,1632 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/todo.Todo'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties:
-              type: string
-            type: object
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_file.FileResponse'
+              type: object
         "404":
           description: Not Found
           schema:
-            additionalProperties:
-              type: string
-            type: object
+            $ref: '#/definitions/rims-go_internal_types.Response'
       security:
       - BearerAuth: []
-      summary: Get todo by id
+      summary: 文件详情
       tags:
-      - todos
+      - 文件
+  /api/v1/files/{id}/download:
+    get:
+      parameters:
+      - description: 文件ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 下载文件
+      tags:
+      - 文件
+  /api/v1/files/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      parameters:
+      - description: 文件内容
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: 业务类型 (product_image/doc_attachment/import_template/export_result/other)
+        in: formData
+        name: businessType
+        type: string
+      - description: 关联业务对象ID
+        in: formData
+        name: businessId
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_file.FileResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 上传文件
+      tags:
+      - 文件
+  /api/v1/inventory:
+    get:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 库存列表
+      tags:
+      - 库存
+  /api/v1/inventory/{id}:
+    get:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.InventoryResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取库存详情
+      tags:
+      - 库存
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.UpdateInventoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.InventoryResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 更新库存设置
+      tags:
+      - 库存
+  /api/v1/inventory/alerts:
+    get:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 库存预警列表
+      tags:
+      - 库存
+  /api/v1/non-std-inventory:
+    get:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 非标库存列表
+      tags:
+      - 非标库存
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 非标库存信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.CreateNonStdInventoryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.NonStdInventoryResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 创建非标库存
+      tags:
+      - 非标库存
+  /api/v1/non-std-inventory/{id}:
+    delete:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 非标库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 删除非标库存
+      tags:
+      - 非标库存
+    get:
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 非标库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.NonStdInventoryResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取非标库存详情
+      tags:
+      - 非标库存
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 非标库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.UpdateNonStdInventoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.NonStdInventoryResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 更新非标库存
+      tags:
+      - 非标库存
+  /api/v1/non-std-inventory/{id}/convert:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 非标库存ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 转换信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.ConvertNonStdRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 非标转标准库存
+      tags:
+      - 非标库存
+  /api/v1/permissions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/internal_modules_user.PermissionResponse'
+                  type: array
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 权限列表
+      tags:
+      - 角色
+  /api/v1/products:
+    get:
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 商品列表
+      tags:
+      - 商品
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 商品信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.CreateProductRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.AdminProductResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 创建商品
+      tags:
+      - 商品
+  /api/v1/products/{id}:
+    delete:
+      parameters:
+      - description: 商品ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 删除商品
+      tags:
+      - 商品
+    get:
+      parameters:
+      - description: 商品ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.ProductResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取商品详情
+      tags:
+      - 商品
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 商品ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_product.UpdateProductRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.AdminProductResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 更新商品
+      tags:
+      - 商品
+  /api/v1/products/barcode/{barcode}:
+    get:
+      parameters:
+      - description: 条码
+        in: path
+        name: barcode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_product.ProductResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 条码查询商品
+      tags:
+      - 商品
+  /api/v1/reports/inventory/overview:
+    get:
+      description: 当前仓库的 SKU 数、总库存、库存金额（管理员）、低库存数量
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_report.InventoryOverviewResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 库存概况
+      tags:
+      - 报表分析
+  /api/v1/reports/inventory/slow-moving:
+    get:
+      description: 指定窗口内销量低于阈值的商品分页列表
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 开始日期 YYYY-MM-DD
+        in: query
+        name: startDate
+        required: true
+        type: string
+      - description: 结束日期 YYYY-MM-DD
+        in: query
+        name: endDate
+        required: true
+        type: string
+      - description: 最大销量阈值 默认0
+        in: query
+        name: maxSales
+        type: integer
+      - description: 页码 默认1
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量 默认20
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 滞销商品预警
+      tags:
+      - 报表分析
+  /api/v1/reports/inventory/turnover:
+    get:
+      description: 指定窗口内的商品周转率（出库数量 / 平均库存）
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 开始日期 YYYY-MM-DD
+        in: query
+        name: startDate
+        required: true
+        type: string
+      - description: 结束日期 YYYY-MM-DD
+        in: query
+        name: endDate
+        required: true
+        type: string
+      - description: 返回条数 默认20
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_report.TurnoverResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 库存周转率
+      tags:
+      - 报表分析
+  /api/v1/reports/sales/ranking:
+    get:
+      description: 按数量或金额排序的销售排行榜
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 开始日期 YYYY-MM-DD
+        in: query
+        name: startDate
+        required: true
+        type: string
+      - description: 结束日期 YYYY-MM-DD
+        in: query
+        name: endDate
+        required: true
+        type: string
+      - description: 排序指标 qty/amount
+        in: query
+        name: metric
+        required: true
+        type: string
+      - description: 返回条数 默认10
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_report.ProductRankResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 商品销售排行
+      tags:
+      - 报表分析
+  /api/v1/reports/sales/stats:
+    get:
+      description: 指定时间范围内的销售汇总（营收、订单数、SKU 数、数量）。成本与毛利仅管理员可见。
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 开始日期 YYYY-MM-DD
+        in: query
+        name: startDate
+        required: true
+        type: string
+      - description: 结束日期 YYYY-MM-DD
+        in: query
+        name: endDate
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_report.SalesStatResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 销售统计
+      tags:
+      - 报表分析
+  /api/v1/reports/sales/trend:
+    get:
+      description: 按日/周/月聚合的销售趋势曲线
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - description: 开始日期 YYYY-MM-DD
+        in: query
+        name: startDate
+        required: true
+        type: string
+      - description: 结束日期 YYYY-MM-DD
+        in: query
+        name: endDate
+        required: true
+        type: string
+      - description: 时间粒度 day/week/month
+        in: query
+        name: bucket
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_report.SalesTrendResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 销售趋势
+      tags:
+      - 报表分析
+  /api/v1/roles:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/internal_modules_user.RoleResponse'
+                  type: array
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 角色列表
+      tags:
+      - 角色
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 角色信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.CreateRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.RoleResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 创建角色
+      tags:
+      - 角色
+  /api/v1/roles/{id}:
+    delete:
+      parameters:
+      - description: 角色ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: 删除角色
+      tags:
+      - 角色
+    get:
+      parameters:
+      - description: 角色ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.RoleResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 获取角色详情
+      tags:
+      - 角色
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 角色ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.UpdateRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.RoleResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 更新角色
+      tags:
+      - 角色
+  /api/v1/roles/{id}/permissions:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 角色ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 权限ID列表
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.AssignPermissionsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 分配角色权限
+      tags:
+      - 角色
+  /api/v1/transactions:
+    get:
+      description: 分页查询当前仓库的库存变动记录
+      parameters:
+      - description: 仓库ID
+        in: header
+        name: X-Warehouse-ID
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索单据号
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 库存流水列表
+      tags:
+      - 单据
+  /api/v1/users:
+    get:
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 用户列表
+      tags:
+      - 用户
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.CreateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.UserResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 创建用户
+      tags:
+      - 用户
+  /api/v1/users/{id}:
+    delete:
+      parameters:
+      - description: 用户ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: 删除用户
+      tags:
+      - 用户
+    get:
+      parameters:
+      - description: 用户ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.UserResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取用户详情
+      tags:
+      - 用户
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.UpdateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.UserResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 更新用户
+      tags:
+      - 用户
+  /api/v1/users/{id}/password:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 用户ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 新密码
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.ResetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 重置用户密码（管理员）
+      tags:
+      - 用户
+  /api/v1/users/me:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.UserResponse'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 获取当前用户信息
+      tags:
+      - 用户
+  /api/v1/users/me/password:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 密码
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.ChangePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 修改密码
+      tags:
+      - 用户
+  /api/v1/users/me/warehouses:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/internal_modules_warehouse.UserWarehouseResponse'
+                  type: array
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 获取当前用户的仓库列表
+      tags:
+      - 仓库
+  /api/v1/users/me/warehouses/current:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_warehouse.SwitchWarehouseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_warehouse.WarehouseResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 切换当前仓库
+      tags:
+      - 仓库
+  /api/v1/users/me/warehouses/default:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_warehouse.SetDefaultWarehouseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 设置默认仓库
+      tags:
+      - 仓库
+  /api/v1/warehouses:
+    get:
+      parameters:
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: 仓库列表
+      tags:
+      - 仓库
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_warehouse.CreateWarehouseRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_warehouse.WarehouseResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 创建仓库
+      tags:
+      - 仓库
+  /api/v1/warehouses/{id}:
+    delete:
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 删除仓库
+      tags:
+      - 仓库
+    get:
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_warehouse.WarehouseResponse'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取仓库详情
+      tags:
+      - 仓库
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新内容
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_warehouse.UpdateWarehouseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_warehouse.WarehouseResponse'
+              type: object
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 更新仓库
+      tags:
+      - 仓库
+  /api/v1/warehouses/{id}/users:
+    get:
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - default: 1
+        description: 页码
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: 每页数量
+        in: query
+        name: pageSize
+        type: integer
+      - description: 搜索关键字
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/rims-go_internal_types.PageResult'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 仓库用户列表
+      tags:
+      - 仓库
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 用户ID列表
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_warehouse.BindUsersRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 绑定用户到仓库
+      tags:
+      - 仓库
+  /api/v1/warehouses/{id}/users/{userId}:
+    delete:
+      parameters:
+      - description: 仓库ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 用户ID
+        in: path
+        name: userId
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      security:
+      - BearerAuth: []
+      summary: 解绑用户与仓库
+      tags:
+      - 仓库
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
 swagger: "2.0"
