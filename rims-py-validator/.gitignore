@@ -1,0 +1,14 @@
+# Python 字节码缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+.venv/
+venv/
+
+# 本地配置（请从 .env.example 复制出来再改）
+.env
+
+# 运行时日志
+logs/
