@@ -39,7 +39,10 @@ cd rims-goProgect && go test ./internal/modules/user/...
 cd rims-goProgect && go build ./...
 
 # Regenerate Swagger docs (after changing API annotations)
-cd rims-goProgect && swag init -g cmd/server/main.go -o docs
+# Global annotations (@title/@BasePath/@securityDefinitions) live in internal/app/app.go,
+# NOT cmd/server/main.go, so -g must point there. --parseInternal walks internal/...,
+# --parseDependency resolves types.Response{data=...} generic envelopes.
+cd rims-goProgect && swag init -g internal/app/app.go --parseDependency --parseInternal -o docs
 ```
 
 ## Architecture

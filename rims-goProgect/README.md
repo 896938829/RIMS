@@ -324,7 +324,10 @@ cd rims-goProgect && go test ./...
 cd rims-goProgect && go build ./...
 
 # 重新生成 Swagger 文档 / Regenerate Swagger docs
-cd rims-goProgect && swag init -g cmd/server/main.go -o docs
+# 全局注解 (@title/@BasePath/@securityDefinitions) 位于 internal/app/app.go,
+# 不在 cmd/server/main.go,因此 -g 必须指向前者。
+# --parseInternal 扫描 internal/... 包;--parseDependency 解析 types.Response{data=...} 泛型信封。
+cd rims-goProgect && swag init -g internal/app/app.go --parseDependency --parseInternal -o docs
 ```
 
 ## 环境变量 / Environment Variables
