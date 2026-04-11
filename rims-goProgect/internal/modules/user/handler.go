@@ -4,23 +4,35 @@
 package user
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/types"
 )
 
+// AuditLogger is the narrow audit contract consumed by the user handler.
+// It is satisfied structurally by *audit.AuditService. The login flow uses
+// it best-effort: an audit write failure never fails the login response
+// since login is not inside a business transaction.
+type AuditLogger interface {
+	Log(ctx context.Context, e audit.Entry) error
+}
+
 // Handler handles HTTP requests for user and auth endpoints.
 type Handler struct {
-	userSvc *UserService
-	roleSvc *RoleService
+	userSvc  *UserService
+	roleSvc  *RoleService
+	auditSvc AuditLogger
 }
 
 // NewHandler creates a new user Handler.
-func NewHandler(userSvc *UserService, roleSvc *RoleService) *Handler {
-	return &Handler{userSvc: userSvc, roleSvc: roleSvc}
+func NewHandler(userSvc *UserService, roleSvc *RoleService, auditSvc AuditLogger) *Handler {
+	return &Handler{userSvc: userSvc, roleSvc: roleSvc, auditSvc: auditSvc}
 }
 
 // --- Auth ---
@@ -41,11 +53,51 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 	resp, err := h.userSvc.Login(c.Request.Context(), req)
+
+	// Best-effort audit: always record login attempts (success or failure).
+	// An audit insert failure must not break the login response.
+	h.auditLogin(c, req.Username, resp, err)
+
 	if err != nil {
 		types.FailFromError(c, err)
 		return
 	}
 	types.OK(c, resp)
+}
+
+// auditLogin records a login attempt to the audit log. On success it captures
+// the resolved user identity; on failure it captures the supplied username and
+// the AppError code/message. Errors from the audit write itself are swallowed
+// since login is not inside a business transaction (no rollback to do).
+func (h *Handler) auditLogin(c *gin.Context, username string, resp *LoginResponse, loginErr error) {
+	entry := audit.Entry{
+		Actor: audit.Actor{
+			Username:  username,
+			TraceID:   types.GetTraceID(c),
+			IPAddress: c.ClientIP(),
+			UserAgent: c.Request.UserAgent(),
+		},
+		Action:      audit.ActionLogin,
+		Resource:    audit.ResourceUser,
+		Description: "用户登录",
+	}
+	if loginErr != nil {
+		entry.Result = audit.ResultFailure
+		var appErr *types.AppError
+		if errors.As(loginErr, &appErr) {
+			entry.ErrorCode = appErr.Code
+			entry.ErrorMsg = appErr.Message
+		} else {
+			entry.ErrorMsg = loginErr.Error()
+		}
+	} else if resp != nil {
+		entry.Result = audit.ResultSuccess
+		entry.Actor.UserID = resp.User.ID
+		entry.Actor.RoleCode = resp.User.RoleCode
+		uid := resp.User.ID
+		entry.ResourceID = &uid
+	}
+	_ = h.auditSvc.Log(c.Request.Context(), entry)
 }
 
 // --- Users ---

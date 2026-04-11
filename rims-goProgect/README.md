@@ -89,7 +89,7 @@ rims-goProgect/
 │       ├── document/               # ✅ 单据与流水 / Documents & Transactions
 │       ├── report/                 # ✅ 报表分析 / Reports & Analytics
 │       ├── file/                   # ✅ 文件附件 / File & Attachment
-│       └── audit/                  # 🔲 审计日志 / Audit & Log
+│       └── audit/                  # ✅ 审计日志 / Audit & Log
 ├── migrations/                     # SQL 迁移脚本 / SQL migrations
 ├── docs/                           # Swagger 生成文件 / Generated Swagger docs
 ├── deploy/                         # Docker Compose 等 / Deployment configs
@@ -97,6 +97,9 @@ rims-goProgect/
 ```
 
 > ✅ 已实现 / Implemented　　🔲 待实现 / Planned
+
+> 所有业务模块均已落地。审计试点接入 `user.Login` + `document.CompleteDocument` 两处，其余写操作的审计接入见后续增强。
+> All business modules are implemented. Audit pilot is wired into `user.Login` + `document.CompleteDocument`; remaining retrofit sites are listed under follow-up enhancements.
 
 ## 模块说明 / Module Details
 
@@ -108,7 +111,7 @@ rims-goProgect/
 | **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单、库存流水 / Inbound, sales, return, transfer, stocktaking, conversion orders & inventory transactions | ✅ |
 | **report** 报表分析 | 销售统计、趋势、排行、库存概况、周转率、滞销预警 / Sales stats, trend, ranking, inventory overview, turnover rate, slow-moving alerts | ✅ |
 | **file** 文件附件 | 文件上传/下载/删除、元数据管理、本地磁盘存储（可插拔 Storage 接口） / File upload/download/delete, metadata management, local-disk storage (pluggable Storage interface) | ✅ |
-| **audit** 审计日志 | 操作审计、日志查询 / Operation audit, log queries | 🔲 |
+| **audit** 审计日志 | 审计日志写入（在业务事务内原子提交）、按用户/仓库/资源/动作/单据号/时间范围查询、管理员only / Audit log writes (atomic with the business transaction), query by user / warehouse / resource / action / docNo / time range, admin-only | ✅ |
 
 ## 模块内部结构 / Module Internal Structure
 
@@ -275,6 +278,16 @@ cd rims-goProgect && go run ./cmd/server
 | GET | `/api/v1/reports/inventory/turnover` | 库存周转率 / Inventory turnover rate |
 | GET | `/api/v1/reports/inventory/slow-moving` | 滞销商品预警 / Slow-moving alerts |
 
+### 审计日志 Audit (需认证+管理员 / Auth + Admin)
+
+> 审计日志为只读查询接口，仅管理员可访问；写入由服务层在业务事务内触发，无对外写接口。
+> Audit logs are query-only and admin-only; writes originate from inside the service layer within the business transaction, with no public write endpoint.
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/audit/logs` | 审计日志列表 (按用户/仓库/资源/动作/单据号/时间/结果过滤) / List audit logs (filter by user / warehouse / resource / action / docNo / time / result) |
+| GET | `/api/v1/audit/logs/:id` | 审计日志详情 (含 before/after 快照) / Get audit log detail (with before/after snapshot) |
+
 ## 统一响应格式 / Unified Response Format
 
 ```json
@@ -336,6 +349,30 @@ cd rims-goProgect && swag init -g cmd/server/main.go -o docs
 - [ ] 受控资源下载时增加 `business_id` 关联对象的权限校验 (如单据附件按仓库范围校验) / Add per-resource permission check on download (e.g. scope document attachments by warehouse)
 - [ ] 软删对象文件的定时清理任务 / Scheduled cleanup job for soft-deleted object files
 - [ ] 文件 hash 去重：上传时命中已有 hash 则复用 `object_key` / File dedup by hash: reuse existing `object_key` on hash match
+
+### 审计模块 / Audit Module
+
+> 当前版本只在 `user.Login` 与 `document.CompleteDocument` 两处试点接入，验证登录安全事件与原子事务回滚两个场景。
+> 其余写操作需要在后续 PR 中逐个接入，接入方式：消费方本地定义 `AuditLogger` 接口，构造函数注入 `*audit.AuditService`，在事务内调用 `Log` 并传入 before/after 快照。
+> The current release only pilots `user.Login` and `document.CompleteDocument`, covering the login-security and atomic-rollback categories. All other write sites need follow-up PRs — consumer defines a local `AuditLogger` interface, injects `*audit.AuditService` via constructor, and calls `Log` inside the business transaction with before/after snapshots.
+
+待接入的写操作清单 / Pending retrofit sites:
+
+- [ ] **user**: `Create` / `Update` / `Delete` / `ChangePassword` / `ResetPassword`
+- [ ] **role & permission**: `Create` / `Update` / `Delete` / `AssignPermissions`
+- [ ] **warehouse**: `Create` / `Update` / `Delete` / `BindUser` / `UnbindUser` / `SetDefaultWarehouse` / `SwitchCurrentWarehouse`
+- [ ] **product**: `Create` / `Update` / `Delete` (admin-only cost price changes in `details`)
+- [ ] **inventory**: `Update` (threshold, status)
+- [ ] **non_std_inventory**: `Create` / `Update` / `Delete` / `Convert`
+- [ ] **document**: `Create` / `ConfirmStocktake` / `SettleStocktake` / `Complete` 的细分单据类型 (入库/销售/退货/调拨/转换) 单独记录动作
+- [ ] **file**: `Upload` / `Delete`
+
+其他增强 / Other enhancements:
+
+- [ ] 保留期与归档策略：按 `created_at` 滚动归档历史审计到冷表，`deleted_at` 配合定时清理 / Retention + archival: roll cold rows off by `created_at`, use `deleted_at` with a scheduled cleanup job
+- [ ] `Details` 字段的字段级 diff 辅助函数：避免每个消费方手写 before/after 快照 / Field-diff helper so consumers don't hand-build before/after maps
+- [ ] 审计查询导出 (CSV/Excel)，受管理员权限约束 / Audit log export (admin-only CSV/Excel)
+- [ ] 更细的异步写路径：对于非关键写操作提供 fire-and-forget 通道，降低热路径延迟 / Optional async path for non-critical writes to keep hot paths fast
 
 ## 许可证 / License
 

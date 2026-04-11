@@ -14,9 +14,17 @@ import (
 	"gorm.io/gorm"
 
 	"rims-go/internal/db"
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/modules/product"
 	"rims-go/internal/types"
 )
+
+// AuditLogger is the narrow contract the document service depends on for
+// emitting audit records. It is satisfied structurally by *audit.AuditService,
+// so this package does not take a hard dependency on the concrete type.
+type AuditLogger interface {
+	Log(ctx context.Context, e audit.Entry) error
+}
 
 // DocumentService handles document and inventory transaction business logic.
 type DocumentService struct {
@@ -27,9 +35,12 @@ type DocumentService struct {
 	nonStdRepo  product.NonStdInventoryRepository
 	productRepo product.ProductRepository
 	txRunner    db.TxRunner
+	audit       AuditLogger
 }
 
-// NewDocumentService creates a new DocumentService.
+// NewDocumentService creates a new DocumentService. The auditLogger is
+// required: Complete emits an audit record from inside its business
+// transaction and cannot silently drop it.
 func NewDocumentService(
 	docRepo DocumentRepository,
 	lineRepo DocumentLineRepository,
@@ -38,6 +49,7 @@ func NewDocumentService(
 	nonStdRepo product.NonStdInventoryRepository,
 	productRepo product.ProductRepository,
 	txRunner db.TxRunner,
+	auditLogger AuditLogger,
 ) *DocumentService {
 	return &DocumentService{
 		docRepo:     docRepo,
@@ -47,6 +59,7 @@ func NewDocumentService(
 		nonStdRepo:  nonStdRepo,
 		productRepo: productRepo,
 		txRunner:    txRunner,
+		audit:       auditLogger,
 	}
 }
 
@@ -158,8 +171,13 @@ func (s *DocumentService) List(ctx context.Context, warehouseID uint, docType in
 	return types.NewPageResult(page, resps, total), nil
 }
 
-// Complete transitions a draft document to completed and executes inventory changes.
-func (s *DocumentService) Complete(ctx context.Context, userID, warehouseID uint, id uint, isAdmin bool) error {
+// Complete transitions a draft document to completed and executes inventory
+// changes. The audit record written at the end of the tx is guaranteed to
+// commit or roll back atomically with the business write (requirements §5.4 /
+// §8.2): if any step here — or the audit insert itself — returns an error,
+// the entire transaction is rolled back and no audit row persists.
+func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, warehouseID, id uint, isAdmin bool) error {
+	userID := actor.UserID
 	return s.txRunner(ctx, func(txCtx context.Context) error {
 		doc, err := s.docRepo.GetByID(txCtx, id)
 		if err != nil {
@@ -184,6 +202,7 @@ func (s *DocumentService) Complete(ctx context.Context, userID, warehouseID uint
 		}
 
 		now := time.Now()
+		beforeStatus := doc.Status
 
 		switch doc.DocType {
 		case DocTypeInbound:
@@ -221,7 +240,28 @@ func (s *DocumentService) Complete(ctx context.Context, userID, warehouseID uint
 		doc.Status = StatusCompleted
 		doc.OperatedAt = &now
 		doc.UpdatedBy = userID
-		return s.docRepo.Update(txCtx, doc)
+		if err := s.docRepo.Update(txCtx, doc); err != nil {
+			return types.ErrSystem(err)
+		}
+
+		docID := doc.ID
+		return s.audit.Log(txCtx, audit.Entry{
+			Actor:       actor,
+			Action:      audit.ActionComplete,
+			Resource:    audit.ResourceDocument,
+			ResourceID:  &docID,
+			DocNo:       doc.DocNo,
+			Description: fmt.Sprintf("完成单据 %s", doc.DocNo),
+			Before: map[string]any{
+				"status":   beforeStatus,
+				"docType":  doc.DocType,
+				"lineCount": len(lines),
+			},
+			After: map[string]any{
+				"status":     doc.Status,
+				"operatedAt": now,
+			},
+		})
 	})
 }
 

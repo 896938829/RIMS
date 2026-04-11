@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/types"
 )
 
@@ -149,7 +150,7 @@ func (h *Handler) CompleteDocument(c *gin.Context) {
 
 	if err := h.docSvc.Complete(
 		c.Request.Context(),
-		types.GetUserID(c),
+		audit.ActorFromContext(c),
 		types.GetWarehouseID(c),
 		id,
 		types.IsAdmin(c),

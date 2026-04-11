@@ -17,6 +17,7 @@ import (
 	"rims-go/internal/config"
 	"rims-go/internal/db"
 	"rims-go/internal/middleware"
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/modules/document"
 	"rims-go/internal/modules/file"
 	"rims-go/internal/modules/product"
@@ -37,6 +38,12 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	tokenSvc := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpireHours)
 	authMw := middleware.JWTAuth(tokenSvc)
 
+	// Audit module — built first so it can be injected into downstream services
+	// and handlers that need atomic or best-effort audit writes.
+	auditRepo := audit.NewAuditRepository(gormDB)
+	auditSvc := audit.NewAuditService(auditRepo)
+	auditHandler := audit.NewHandler(auditSvc)
+
 	// Repositories
 	userRepo := user.NewUserRepository(gormDB)
 	roleRepo := user.NewRoleRepository(gormDB)
@@ -49,7 +56,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, db.NewTxRunner(gormDB))
 
 	// Handlers
-	userHandler := user.NewHandler(userSvc, roleSvc)
+	userHandler := user.NewHandler(userSvc, roleSvc, auditSvc)
 	warehouseHandler := warehouse.NewHandler(warehouseSvc)
 
 	// Warehouse scope middleware
@@ -70,6 +77,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 		docRepo, docLineRepo, txnRepo,
 		inventoryRepo, nonStdRepo, productRepo,
 		db.NewTxRunner(gormDB),
+		auditSvc,
 	)
 	docHandler := document.NewHandler(docSvc)
 
@@ -113,6 +121,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	document.RegisterRoutes(api, docHandler, authMw, whScope)
 	report.RegisterRoutes(api, reportHandler, authMw, whScope)
 	file.RegisterRoutes(api, fileHandler, authMw)
+	audit.RegisterRoutes(api, auditHandler, authMw)
 
 	return r
 }
