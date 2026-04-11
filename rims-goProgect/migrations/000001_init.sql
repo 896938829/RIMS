@@ -61,8 +61,9 @@ INSERT INTO roles (code, name, description) VALUES
     ('user', '普通用户', '普通操作用户')
 ON CONFLICT (code) DO NOTHING;
 
--- Seed default admin user (password: admin123, bcrypt hash)
+-- Seed default admin user (password: admin123, bcrypt cost 10)
+-- Hash verified with golang.org/x/crypto/bcrypt 2026-04-11.
 INSERT INTO users (username, password_hash, real_name, role_id, status) VALUES
-    ('admin', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '系统管理员',
+    ('admin', '$2a$10$z4rzZyUqSvr52UB56i7JF.i7OwzHrTSVM6ogCnJBsJ4whq7GVMDgy', '系统管理员',
      (SELECT id FROM roles WHERE code = 'admin'), 1)
 ON CONFLICT (username) DO NOTHING;
