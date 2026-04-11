@@ -4,6 +4,7 @@
 package app
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,7 @@ import (
 	"rims-go/internal/db"
 	"rims-go/internal/middleware"
 	"rims-go/internal/modules/document"
+	"rims-go/internal/modules/file"
 	"rims-go/internal/modules/product"
 	"rims-go/internal/modules/report"
 	"rims-go/internal/modules/user"
@@ -76,6 +78,27 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	reportSvc := report.NewReportService(reportRepo)
 	reportHandler := report.NewHandler(reportSvc)
 
+	// File module — local storage for v1; see README TODO for object storage.
+	const filePublicPrefix = "/uploads"
+	uploadDir := cfg.UploadDir
+	if uploadDir == "" {
+		uploadDir = "./uploads"
+	}
+	localStorage, err := file.NewLocalStorage(uploadDir, filePublicPrefix)
+	if err != nil {
+		log.Panicf("init file storage: %v", err)
+	}
+	fileRepo := file.NewFileRepository(gormDB)
+	fileSvc := file.NewFileService(
+		fileRepo, localStorage,
+		cfg.MaxUploadMB, cfg.AllowedExts,
+		"/api/v1/files/%d/download",
+	)
+	fileHandler := file.NewHandler(fileSvc)
+
+	// Serve public file objects from the local uploads directory.
+	r.Static(filePublicPrefix, localStorage.BaseDir())
+
 	// Public endpoints
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -89,6 +112,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	product.RegisterRoutes(api, productHandler, authMw, whScope)
 	document.RegisterRoutes(api, docHandler, authMw, whScope)
 	report.RegisterRoutes(api, reportHandler, authMw, whScope)
+	file.RegisterRoutes(api, fileHandler, authMw)
 
 	return r
 }

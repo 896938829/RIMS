@@ -18,6 +18,9 @@ func TestBuildRouterHealthz(t *testing.T) {
 		CORSOrigins:    "*",
 		ReadTimeout:    30,
 		WriteTimeout:   30,
+		UploadDir:      t.TempDir(),
+		MaxUploadMB:    10,
+		AllowedExts:    ".jpg,.png,.pdf",
 	}
 	r := buildRouter(cfg, nil)
 

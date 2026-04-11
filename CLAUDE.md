@@ -72,8 +72,9 @@ Each domain module lives in `internal/modules/<name>/` with a consistent layered
 
 - `document` — business documents (inbound/sales/return/transfer/stocktake/conversion), document lines, inventory transaction log; polymorphic `documents` table with `doc_type` discriminator; `CompleteDocument` executes inventory changes transactionally; stocktake has 3-step flow (recording→confirmed→settled); cross-module: imports `product.InventoryRepository`/`ProductRepository`/`NonStdInventoryRepository` for inventory operations
 - `report` — read-only analytics: sales stats, sales trend (day/week/month), product ranking, inventory overview, turnover rate, slow-moving alerts; aggregates over `documents`/`document_lines`/`inventory_transactions`/`inventories`/`products` via raw `.Table(...)` joins (no cross-module model imports); admin-only field gating on cost/profit/stock-value via `*float64 + omitempty`; time-range validation (max 366d); bucket/metric whitelisting to prevent SQL injection; no `model.go` (no new entities)
+- `file` — file attachments (product images, document attachments, import templates, export results); `file_attachments` metadata table with `business_type` + nullable `business_id` link; **pluggable `Storage` interface** with `LocalStorage` impl for v1 (reads `cfg.UploadDir`); upload streams into a buffer while computing SHA-256 + sniffing MIME + enforcing `cfg.MaxUploadMB` / `cfg.AllowedExts`; public types (`product_image`) get a static `/uploads/*` URL, private types proxy via `/api/v1/files/:id/download`; delete = uploader-or-admin soft-delete retaining the object (v2 cleanup job); cross-module: none (no business module imports — consumers just reference the returned `fileUrl` / `id`). Follow-up TODO: MinIO/S3 backend, per-business ACL, hash dedup, cleanup job (see README).
 
-Planned: `file`, `audit`.
+Planned: `audit`.
 
 ### Shared Infrastructure
 
@@ -86,7 +87,7 @@ Planned: `file`, `audit`.
 - `internal/auth/` — JWT `TokenService` (GenerateToken, ParseToken); Claims carry `UserID`, `Username`, `RoleID`, `RoleCode`
 - `internal/db/` — GORM connection (`db.go`) + transaction propagation (`tx.go`: `RunInTx`, `FromCtx`)
 - `internal/middleware/` — `JWTAuth`, `RequestID`, `Logger`, `CORS`, `WarehouseScope`; planned: `Permission`, `Idempotency`
-- `internal/config/` — Viper-based config struct
+- `internal/config/` — Viper-based config struct (includes `UploadDir` / `MaxUploadMB` / `AllowedExts` for the file module; empty `UploadDir` falls back to `./uploads` inside `buildRouter`)
 
 ### Cross-Module Interaction
 
@@ -102,11 +103,11 @@ Recovery → RequestID → Logger → CORS → [public routes] → JWTAuth → [
 
 JWT middleware sets `userID`, `username`, `roleID`, `roleCode` in gin.Context. `WarehouseScope` middleware reads `X-Warehouse-ID` header (falls back to user's default warehouse), validates access, and sets `warehouseID` in context — applied to inventory, non-std-inventory, documents, and transactions routes.
 
-**API routes**: All under `/api/v1`. Public: `POST /auth/login`. Protected: `/users`, `/roles`, `/permissions`, `/warehouses` CRUD + user-warehouse binding, `/products` CRUD + barcode lookup, `/inventory` list/alerts/update (warehouse-scoped), `/non-std-inventory` CRUD + convert (warehouse-scoped, admin-only), `/documents` CRUD + complete/confirm/settle (warehouse-scoped), `/transactions` list (warehouse-scoped), `/reports/{sales,inventory}/...` (warehouse-scoped; cost/profit fields admin-only).
+**API routes**: All under `/api/v1`. Public: `POST /auth/login`, `GET /uploads/*` (static serving for public file objects). Protected: `/users`, `/roles`, `/permissions`, `/warehouses` CRUD + user-warehouse binding, `/products` CRUD + barcode lookup, `/inventory` list/alerts/update (warehouse-scoped), `/non-std-inventory` CRUD + convert (warehouse-scoped, admin-only), `/documents` CRUD + complete/confirm/settle (warehouse-scoped), `/transactions` list (warehouse-scoped), `/reports/{sales,inventory}/...` (warehouse-scoped; cost/profit fields admin-only), `/files` upload/list/get/download/delete (auth only, NOT warehouse-scoped — files link to business objects via `business_id`).
 
 **Swagger UI**: available at `/swagger/index.html` when the server is running.
 
-**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` (users/roles/permissions + seed admin), `000002_warehouse.sql` (warehouses/user_warehouses + seed default warehouse), `000003_product.sql` (products/inventories/non_std_inventories), `000004_document.sql` (documents/document_lines/inventory_transactions), `000005_report_indexes.sql` (compound partial indexes supporting report aggregation queries — warehouse+time+doc_type on inventory_transactions/documents). GORM AutoMigrate also runs at startup for convenience but does NOT create the raw indexes; apply the SQL file manually on new environments.
+**SQL migrations**: `rims-goProgect/migrations/` contains raw SQL. `000001_init.sql` (users/roles/permissions + seed admin), `000002_warehouse.sql` (warehouses/user_warehouses + seed default warehouse), `000003_product.sql` (products/inventories/non_std_inventories), `000004_document.sql` (documents/document_lines/inventory_transactions), `000005_report_indexes.sql` (compound partial indexes supporting report aggregation queries — warehouse+time+doc_type on inventory_transactions/documents), `000006_file.sql` (`file_attachments` metadata table + `(business_type, business_id)` / unique `object_key` / `file_hash` partial indexes). GORM AutoMigrate also runs at startup for convenience but does NOT create the raw indexes; apply the SQL file manually on new environments.
 
 **Docker**: `deploy/docker-compose.yml` runs PostgreSQL 16, reads env vars from workspace root `.env`.
 

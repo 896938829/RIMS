@@ -88,7 +88,7 @@ rims-goProgect/
 │       ├── product/                # ✅ 商品与库存 / Product & Inventory
 │       ├── document/               # ✅ 单据与流水 / Documents & Transactions
 │       ├── report/                 # ✅ 报表分析 / Reports & Analytics
-│       ├── file/                   # 🔲 文件附件 / File & Attachment
+│       ├── file/                   # ✅ 文件附件 / File & Attachment
 │       └── audit/                  # 🔲 审计日志 / Audit & Log
 ├── migrations/                     # SQL 迁移脚本 / SQL migrations
 ├── docs/                           # Swagger 生成文件 / Generated Swagger docs
@@ -107,7 +107,7 @@ rims-goProgect/
 | **product** 商品库存 | 商品档案、标准/非标库存、库存预警、非标转标准 / Product catalog, standard/non-standard inventory, alerts, non-std conversion | ✅ |
 | **document** 单据流水 | 入库/销售/退货/调拨/盘点/转换单、库存流水 / Inbound, sales, return, transfer, stocktaking, conversion orders & inventory transactions | ✅ |
 | **report** 报表分析 | 销售统计、趋势、排行、库存概况、周转率、滞销预警 / Sales stats, trend, ranking, inventory overview, turnover rate, slow-moving alerts | ✅ |
-| **file** 文件附件 | 图片上传、附件管理 / Image upload, attachment management | 🔲 |
+| **file** 文件附件 | 文件上传/下载/删除、元数据管理、本地磁盘存储（可插拔 Storage 接口） / File upload/download/delete, metadata management, local-disk storage (pluggable Storage interface) | ✅ |
 | **audit** 审计日志 | 操作审计、日志查询 / Operation audit, log queries | 🔲 |
 
 ## 模块内部结构 / Module Internal Structure
@@ -249,6 +249,19 @@ cd rims-goProgect && go run ./cmd/server
 |---|---|---|
 | GET | `/api/v1/transactions` | 库存流水列表 / List inventory transactions |
 
+### 文件附件 Files (需认证 / Auth Required)
+
+> 公开类型 (product_image) 通过 `/uploads/*` 静态路径直接访问；受控类型需经 `/files/:id/download` 代理。
+> Public types (product_image) served via `/uploads/*` static path; controlled types must go through `/files/:id/download`.
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/files/upload` | 上传文件 / Upload file (multipart) |
+| GET | `/api/v1/files` | 文件列表 / List files |
+| GET | `/api/v1/files/:id` | 文件详情 / Get file metadata |
+| GET | `/api/v1/files/:id/download` | 下载文件 / Download file |
+| DELETE | `/api/v1/files/:id` | 删除文件 (上传人或管理员) / Delete file (uploader or admin) |
+
 ### 报表分析 Reports (需认证+仓库范围 / Auth + Warehouse Scope)
 
 > 成本、毛利、库存金额等敏感字段仅管理员可见 / Cost, gross profit, stock value fields are admin-only.
@@ -315,6 +328,14 @@ cd rims-goProgect && swag init -g cmd/server/main.go -o docs
 | `DB_AUTO_MIGRATE` | 自动迁移 / Auto migrate | true |
 | `CORS_ORIGINS` | 允许的跨域源 / Allowed origins | * |
 | `LOG_LEVEL` | 日志级别 / Log level | info |
+
+## 后续增强 / Follow-up Enhancements
+
+### 文件模块 / File Module
+- [ ] 接入对象存储 (MinIO/S3)，替换 `LocalStorage` 实现 / Integrate object storage (MinIO/S3) to replace `LocalStorage`
+- [ ] 受控资源下载时增加 `business_id` 关联对象的权限校验 (如单据附件按仓库范围校验) / Add per-resource permission check on download (e.g. scope document attachments by warehouse)
+- [ ] 软删对象文件的定时清理任务 / Scheduled cleanup job for soft-deleted object files
+- [ ] 文件 hash 去重：上传时命中已有 hash 则复用 `object_key` / File dedup by hash: reuse existing `object_key` on hash match
 
 ## 许可证 / License
 

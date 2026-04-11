@@ -11,6 +11,7 @@ import (
 	"rims-go/internal/config"
 	"rims-go/internal/db"
 	"rims-go/internal/modules/document"
+	"rims-go/internal/modules/file"
 	"rims-go/internal/modules/product"
 	"rims-go/internal/modules/user"
 	"rims-go/internal/modules/warehouse"
@@ -49,6 +50,7 @@ func Run() error {
 			&document.Document{},
 			&document.DocumentLine{},
 			&document.InventoryTransaction{},
+			&file.FileAttachment{},
 		); err != nil {
 			return fmt.Errorf("auto migrate: %w", err)
 		}
