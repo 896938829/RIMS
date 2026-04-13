@@ -1,0 +1,49 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (c) 2026 ShangBin Wang */
+
+body {
+    font-size: 0.9rem;
+}
+
+.table-sm td, .table-sm th {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.table-sm td:hover {
+    white-space: normal;
+    word-break: break-all;
+}
+
+.filter-row input {
+    font-size: 0.8rem;
+    padding: 2px 6px;
+}
+
+.sort-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+.sort-link:hover {
+    color: #0d6efd;
+}
+
+.query-textarea {
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+}
+
+.null-value {
+    color: #999;
+    font-style: italic;
+}
+
+pre.sql-display {
+    background: #f8f9fa;
+    padding: 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
