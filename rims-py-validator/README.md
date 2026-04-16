@@ -91,8 +91,8 @@ rims-py-validator/
 - [x] `flows/warehouse/switch_warehouse.py` — 设置默认仓库 + 切换当前仓库
 
 **product 模块**
-- [ ] `flows/product/product_crud.py` — 商品 CRUD + 成本价 admin 屏蔽校验
-- [ ] `flows/product/barcode_lookup.py` — 条码正向/反向查询
+- [x] `flows/product/product_crud.py` — 商品 CRUD + 成本价 admin 屏蔽校验
+- [x] `flows/product/barcode_lookup.py` — 条码正向/反向查询
 
 **inventory 模块**
 - [ ] `flows/inventory/list_and_alert.py` — 标准库存列表 + 告警阈值 + 仓库隔离
