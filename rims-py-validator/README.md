@@ -88,7 +88,7 @@ rims-py-validator/
 
 **warehouse 模块**
 - [x] `flows/warehouse/warehouse_crud.py` — 仓库 CRUD + 绑定/解绑用户
-- [ ] `flows/warehouse/switch_warehouse.py` — 设置默认仓库 + 切换当前仓库
+- [x] `flows/warehouse/switch_warehouse.py` — 设置默认仓库 + 切换当前仓库
 
 **product 模块**
 - [ ] `flows/product/product_crud.py` — 商品 CRUD + 成本价 admin 屏蔽校验
