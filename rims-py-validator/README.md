@@ -95,8 +95,8 @@ rims-py-validator/
 - [x] `flows/product/barcode_lookup.py` — 条码正向/反向查询
 
 **inventory 模块**
-- [ ] `flows/inventory/list_and_alert.py` — 标准库存列表 + 告警阈值 + 仓库隔离
-- [ ] `flows/inventory/non_std_convert.py` — 非标创建 / 转标 / admin 权限
+- [x] `flows/inventory/list_and_alert.py` — 标准库存列表 + 告警阈值 + 仓库隔离
+- [x] `flows/inventory/non_std_convert.py` — 非标创建 / 转标 / admin 权限
 
 **document 模块**
 - [ ] `flows/document/inbound.py` — 入库单 创建→完成→库存校验
