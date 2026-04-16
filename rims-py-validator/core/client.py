@@ -158,6 +158,22 @@ class APIClient:
             raise APIError(code=-1, message=f"网络异常: {e}") from e
 
         # ---- 解析响应 envelope ----
+        # 后端 OKNoContent 返回 HTTP 204 + 空 body，不走 envelope
+        if resp.status_code == 204 or not resp.content:
+            self._log.info(
+                "[RSP] %s %s status=%s (无内容)",
+                method.upper(),
+                url,
+                resp.status_code,
+            )
+            if resp.status_code >= 400:
+                raise APIError(
+                    code=-2,
+                    message=f"HTTP {resp.status_code}",
+                    http_status=resp.status_code,
+                )
+            return None
+
         try:
             payload = resp.json()
         except ValueError:

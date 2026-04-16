@@ -10,6 +10,7 @@ RIMS 后端的 **"假前端"** 验证工具。使用 Python 按业务流程顺�
 - **可观测**：每次 API 调用都在控制台与日志文件同步输出，方便排查
 - **增量补齐**：先提供最小可运行骨架（登录 + 冒烟），其余流程以 TODO 形式逐步补全
 - **独立**：不依赖 Go 项目，不写数据库，纯黑盒
+- **测试原则**：模拟用户操作，寻找后端漏洞
 
 ## 快速开始
 
@@ -83,10 +84,10 @@ rims-py-validator/
 ### TODO（按 PRD 对应业务流）
 
 **user 模块**
-- [ ] `flows/user/user_crud.py` — 用户创建 / 列表 / 详情 / 改密 / 删除 + 权限校验
+- [x] `flows/user/user_crud.py` — 用户创建 / 列表 / 详情 / 改密 / 删除 + 权限校验
 
 **warehouse 模块**
-- [ ] `flows/warehouse/warehouse_crud.py` — 仓库 CRUD + 绑定/解绑用户
+- [x] `flows/warehouse/warehouse_crud.py` — 仓库 CRUD + 绑定/解绑用户
 - [ ] `flows/warehouse/switch_warehouse.py` — 设置默认仓库 + 切换当前仓库
 
 **product 模块**

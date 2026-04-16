@@ -24,10 +24,13 @@ def assert_in(key: str, container: Any, label: str) -> None:
 
 
 def assert_page(data: Any, *, min_total: int = 0) -> None:
-    """分页响应断言：验证形状 `{items, total, page, pageSize}`。"""
+    """分页响应断言：验证形状 `{list, total, page, pageSize}`。
+
+    后端 `types.PageResult` 的 JSON 字段是 `list`（见 rims-goProgect/internal/types/pagination.go）。
+    """
     if not isinstance(data, dict):
         raise AssertionError(f"分页响应不是对象：{data!r}")
-    for field_name in ("items", "total", "page", "pageSize"):
+    for field_name in ("list", "total", "page", "pageSize"):
         if field_name not in data:
             raise AssertionError(f"分页响应缺少字段 {field_name}：{data!r}")
     if data["total"] < min_total:
