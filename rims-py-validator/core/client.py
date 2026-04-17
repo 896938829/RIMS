@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json as _json
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -219,6 +220,89 @@ class APIClient:
         return data_field
 
     # ---------- 便捷方法 ----------
+
+    def download_raw(
+        self,
+        path: str,
+        *,
+        scoped: bool = False,
+        extra_headers: Optional[Mapping[str, str]] = None,
+    ) -> tuple[bytes, dict]:
+        """二进制下载：不解析 envelope，返回 (body_bytes, response_headers)。
+
+        与 `request()` 的区别：后端 `/files/:id/download` 与静态 `/uploads/*`
+        都直接返回原始文件字节，没有 `{code, message, data}` 外壳。
+        这里仍经过同一个 session 与日志体系，满足 "所有 API 调用必须通过
+        APIClient" 的硬约束（见 README.md 规则 4）。
+
+        path 支持三种形式：
+          - 绝对 URL（`http://...`）：直接使用
+          - `/uploads/...` 等非 `/api/v1` 主机相对路径：拼 host（去掉 base_url 中的 `/api/v1`）
+          - 其它 `/xxx` 相对路径：拼 `base_url`（即走 `/api/v1` 前缀）
+        """
+        # ---- 组装完整 URL ----
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path
+        elif path.startswith("/uploads/"):
+            # 静态路由不在 /api/v1 下，取 base_url 的 scheme+host
+            parsed = urlparse(self.base_url)
+            url = f"{parsed.scheme}://{parsed.netloc}{path}"
+        else:
+            url = f"{self.base_url}{path if path.startswith('/') else '/' + path}"
+
+        # ---- 请求头（复用 token / 可选仓库作用域） ----
+        headers: dict[str, str] = {}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        if scoped and self._warehouse_id is not None:
+            headers["X-Warehouse-ID"] = str(self._warehouse_id)
+        if extra_headers:
+            headers.update(extra_headers)
+
+        has_token = "yes" if self._token else "no"
+        has_wh = headers.get("X-Warehouse-ID", "-")
+        self._log.info(
+            "[REQ] GET %s token=%s warehouse=%s (raw-download)",
+            url,
+            has_token,
+            has_wh,
+        )
+
+        try:
+            resp = self._session.get(url, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            self._log.error("[ERR] GET %s 网络异常: %s", url, e)
+            raise APIError(code=-1, message=f"网络异常: {e}") from e
+
+        body = resp.content or b""
+        self._log.info(
+            "[RSP] GET %s status=%s bytes=%d content-type=%s",
+            url,
+            resp.status_code,
+            len(body),
+            resp.headers.get("Content-Type", "-"),
+        )
+
+        if resp.status_code >= 400:
+            # 下载接口出错时，后端可能回退到 envelope JSON（FailFromError 路径）
+            code = -2
+            message = f"HTTP {resp.status_code}"
+            trace_id = ""
+            try:
+                payload = resp.json()
+                code = payload.get("code", code)
+                message = payload.get("message", message)
+                trace_id = payload.get("traceId", "")
+            except ValueError:
+                pass
+            raise APIError(
+                code=code,
+                message=message,
+                http_status=resp.status_code,
+                trace_id=trace_id,
+            )
+
+        return body, dict(resp.headers)
 
     def get(self, path: str, **kw: Any) -> Any:
         return self.request("GET", path, **kw)
