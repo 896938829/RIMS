@@ -43,6 +43,15 @@ func (h *Handler) CreateDocument(c *gin.Context) {
 		return
 	}
 
+	// admin-only 单据类型：入库/调拨/盘点/非标转换（PRD 权限矩阵）
+	switch req.DocType {
+	case DocTypeInbound, DocTypeTransfer, DocTypeStocktake, DocTypeConversion:
+		if !types.IsAdmin(c) {
+			types.FailFromError(c, types.ErrForbidden())
+			return
+		}
+	}
+
 	resp, err := h.docSvc.Create(
 		c.Request.Context(),
 		types.GetUserID(c),
@@ -124,6 +133,12 @@ func (h *Handler) GetDocument(c *gin.Context) {
 	if err != nil {
 		types.FailFromError(c, err)
 		return
+	}
+	// 非 admin 屏蔽明细行成本价（PRD 权限矩阵）
+	if !types.IsAdmin(c) {
+		for i := range resp.Lines {
+			resp.Lines[i].CostPrice = 0
+		}
 	}
 	types.OK(c, resp)
 }

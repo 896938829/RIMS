@@ -148,6 +148,16 @@ func (h *Handler) Download(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	// 预取元数据做 ACL：私有文件仅上传者或 admin 可下载
+	meta, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		types.FailFromError(c, err)
+		return
+	}
+	if !meta.IsPublic && !types.IsAdmin(c) && meta.CreatedBy != types.GetUserID(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	rc, f, err := h.svc.OpenForDownload(c.Request.Context(), id)
 	if err != nil {
 		types.FailFromError(c, err)

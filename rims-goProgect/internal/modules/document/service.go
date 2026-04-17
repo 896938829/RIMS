@@ -206,6 +206,9 @@ func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, wareh
 
 		switch doc.DocType {
 		case DocTypeInbound:
+			if !isAdmin {
+				return types.ErrForbidden()
+			}
 			if err := s.executeInbound(txCtx, doc, lines, userID, now); err != nil {
 				return err
 			}

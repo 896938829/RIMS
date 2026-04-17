@@ -113,6 +113,10 @@ func (h *Handler) auditLogin(c *gin.Context, username string, resp *LoginRespons
 // @Failure 400 {object} types.Response
 // @Router /api/v1/users [post]
 func (h *Handler) CreateUser(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -183,6 +187,10 @@ func (h *Handler) GetUser(c *gin.Context) {
 // @Success 200 {object} types.Response{data=UserResponse}
 // @Router /api/v1/users/{id} [put]
 func (h *Handler) UpdateUser(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -208,6 +216,10 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 // @Success 204
 // @Router /api/v1/users/{id} [delete]
 func (h *Handler) DeleteUser(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -253,6 +265,10 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 // @Success 200 {object} types.Response
 // @Router /api/v1/users/{id}/password [put]
 func (h *Handler) ResetPassword(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
