@@ -99,11 +99,11 @@ rims-py-validator/
 - [x] `flows/inventory/non_std_convert.py` — 非标创建 / 转标 / admin 权限
 
 **document 模块**
-- [ ] `flows/document/inbound.py` — 入库单 创建→完成→库存校验
-- [ ] `flows/document/sale.py` — 销售单 创建→完成→库存&报表校验
-- [ ] `flows/document/return_flow.py` — 退货单 关联原销售单→完成→库存回补
-- [ ] `flows/document/transfer.py` — 跨仓调拨 + 双仓库存校验
-- [ ] `flows/document/stocktake.py` — 盘点三阶段（recording → confirmed → settled）
+- [x] `flows/document/inbound.py` — 入库单 创建→完成→库存校验
+- [x] `flows/document/sale.py` — 销售单 创建→完成→库存&报表校验
+- [x] `flows/document/return_flow.py` — 退货单 关联原销售单→完成→库存回补
+- [x] `flows/document/transfer.py` — 跨仓调拨 + 双仓库存校验
+- [x] `flows/document/stocktake.py` — 盘点三阶段（recording → confirmed → settled）
 
 **report 模块**
 - [ ] `flows/report/sales_stats.py` — 销售统计/趋势/排行 + admin 字段屏蔽
