@@ -106,8 +106,8 @@ rims-py-validator/
 - [x] `flows/document/stocktake.py` — 盘点三阶段（recording → confirmed → settled）
 
 **report 模块**
-- [ ] `flows/report/sales_stats.py` — 销售统计/趋势/排行 + admin 字段屏蔽
-- [ ] `flows/report/inventory_overview.py` — 库存总览/周转/滞销
+- [x] `flows/report/sales_stats.py` — 销售统计/趋势/排行 + admin 字段屏蔽
+- [x] `flows/report/inventory_overview.py` — 库存总览/周转/滞销
 
 **file 模块**
 - [ ] `flows/file/upload_download.py` — public/private 两类文件上传下载 + 大小限制
