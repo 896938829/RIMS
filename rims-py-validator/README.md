@@ -113,7 +113,7 @@ rims-py-validator/
 - [x] `flows/file/upload_download.py` — public/private 两类文件上传下载 + 大小限制
 
 **audit 模块**
-- [ ] `flows/audit/query_logs.py` — 审计列表/详情 + admin 权限 + 时间窗口限制
+- [x] `flows/audit/query_logs.py` — 审计列表/详情 + admin 权限 + 时间窗口限制
 
 ---
 
