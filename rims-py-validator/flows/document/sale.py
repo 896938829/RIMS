@@ -230,7 +230,7 @@ def run(client: APIClient) -> None:  # noqa: C901
         _log.info("超卖单已创建为草稿，尝试 complete")
         expect_error(
             lambda: client.post(f"/documents/{oversell_id}/complete"),
-            code=20003,  # ErrInsufficientStock
+            code=20001,  # ErrInsufficientStock
         )
         _log.info("超卖拦截验证通过（ErrInsufficientStock）")
 

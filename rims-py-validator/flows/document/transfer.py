@@ -276,7 +276,7 @@ def run(client: APIClient) -> None:  # noqa: C901
         })
         expect_error(
             lambda: client.post(f"/documents/{over_doc['id']}/complete"),
-            code=20003,  # ErrInsufficientStock
+            code=20001,  # ErrInsufficientStock
         )
         _log.info("超库存调拨拦截通过")
 

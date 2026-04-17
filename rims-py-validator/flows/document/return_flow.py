@@ -303,7 +303,7 @@ def run(client: APIClient) -> None:  # noqa: C901
         })
         expect_error(
             lambda: client.post(f"/documents/{draft_ret['id']}/complete"),
-            code=10003,
+            code=20002,  # ErrInvalidState: 原销售单未完成
         )
         _log.info("引用草稿销售单退货拦截通过")
 
