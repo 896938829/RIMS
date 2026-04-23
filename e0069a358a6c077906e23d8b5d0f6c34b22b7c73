@@ -1,0 +1,47 @@
+docs/tutorial/02-bootstrap.md
+  34e547177fadbd6d 1-191
+docs/tutorial/09-cross-cutting.md
+  34e547177fadbd6d 1-301
+docs/tutorial/08-transactions.md
+  34e547177fadbd6d 1-289
+docs/tutorial/05-middleware.md
+  34e547177fadbd6d 1-316
+docs/tutorial/03-config-db.md
+  34e547177fadbd6d 1-211
+docs/tutorial/00-index.md
+  34e547177fadbd6d 1-74
+docs/tutorial/04-shared-types.md
+  34e547177fadbd6d 1-391
+docs/tutorial/06-module-pattern.md
+  34e547177fadbd6d 1-548
+docs/tutorial/07-request-lifecycle.md
+  34e547177fadbd6d 1-310
+docs/tutorial/10-error-handling.md
+  34e547177fadbd6d 1-278
+docs/tutorial/11-swagger.md
+  34e547177fadbd6d 1-221
+docs/tutorial/12-exercises.md
+  34e547177fadbd6d 1-350
+docs/tutorial/01-overview.md
+  34e547177fadbd6d 1-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.13",
+  "base_commit_sha": "e0069a358a6c077906e23d8b5d0f6c34b22b7c73",
+  "prompts": {
+    "34e547177fadbd6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3a91fab-964c-4853-a2e2-da6f75af8373",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "p-Wangsb",
+      "messages": [],
+      "total_additions": 3611,
+      "total_deletions": 0,
+      "accepted_lines": 3611,
+      "overriden_lines": 0
+    }
+  }
+}
