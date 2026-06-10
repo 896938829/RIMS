@@ -9,7 +9,7 @@ import "github.com/gin-gonic/gin"
 func RegisterRoutes(
 	rg *gin.RouterGroup,
 	handler *Handler,
-	authMw, whScope gin.HandlerFunc,
+	authMw, whScope, idemMw gin.HandlerFunc,
 ) {
 	// Product catalog (global, no warehouse scope)
 	products := rg.Group("/products")
@@ -37,5 +37,5 @@ func RegisterRoutes(
 	nonStd.GET("/:id", handler.GetNonStd)
 	nonStd.PUT("/:id", handler.UpdateNonStd)
 	nonStd.DELETE("/:id", handler.DeleteNonStd)
-	nonStd.POST("/:id/convert", handler.ConvertNonStd)
+	nonStd.POST("/:id/convert", idemMw, handler.ConvertNonStd)
 }

@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 ShangBin Wang
+
+package idempotency
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"rims-go/internal/types"
+)
+
+const defaultTTL = 24 * time.Hour
+
+var ErrKeyReusedWithDifferentRequest = errors.New("idempotency key reused with different request")
+
+type DecisionType int
+
+const (
+	DecisionProceed DecisionType = iota + 1
+	DecisionReplay
+	DecisionProcessing
+)
+
+// Decision tells callers how to handle an idempotency key.
+type Decision struct {
+	Type         DecisionType
+	StatusCode   int
+	ResponseBody []byte
+}
+
+// Service coordinates idempotency key state transitions.
+type Service struct {
+	repo Repository
+	ttl  time.Duration
+}
+
+// NewService creates an idempotency service. Non-positive TTL values default
+// to 24 hours.
+func NewService(repo Repository, ttl time.Duration) *Service {
+	if ttl <= 0 {
+		ttl = defaultTTL
+	}
+	return &Service{repo: repo, ttl: ttl}
+}
+
+// Begin reserves a key or returns the cached state for an existing key.
+func (s *Service) Begin(ctx context.Context, userID uint, scope, key, requestHash string) (Decision, error) {
+	now := time.Now()
+	record, err := s.repo.Get(ctx, userID, scope, key)
+	if errors.Is(err, ErrRecordNotFound) {
+		if createErr := s.createProcessing(ctx, userID, scope, key, requestHash, now); createErr != nil {
+			return s.beginExisting(ctx, userID, scope, key, requestHash, createErr)
+		}
+		return Decision{Type: DecisionProceed}, nil
+	}
+	if err != nil {
+		return Decision{}, err
+	}
+	return s.decisionForRecord(ctx, record, requestHash, now)
+}
+
+func (s *Service) beginExisting(ctx context.Context, userID uint, scope, key, requestHash string, createErr error) (Decision, error) {
+	record, err := s.repo.Get(ctx, userID, scope, key)
+	if err != nil {
+		return Decision{}, createErr
+	}
+	decision, err := s.decisionForRecord(ctx, record, requestHash, time.Now())
+	if err != nil {
+		return Decision{}, err
+	}
+	return decision, nil
+}
+
+func (s *Service) createProcessing(ctx context.Context, userID uint, scope, key, requestHash string, now time.Time) error {
+	return s.repo.Create(ctx, &Record{
+		UserID:         userID,
+		Scope:          scope,
+		IdempotencyKey: key,
+		RequestHash:    requestHash,
+		State:          StateProcessing,
+		ExpiresAt:      now.Add(s.ttl),
+	})
+}
+
+func (s *Service) decisionForRecord(ctx context.Context, record *Record, requestHash string, now time.Time) (Decision, error) {
+	if !record.ExpiresAt.IsZero() && !record.ExpiresAt.After(now) {
+		if err := s.repo.Delete(ctx, record.UserID, record.Scope, record.IdempotencyKey); err != nil {
+			return Decision{}, err
+		}
+		if err := s.createProcessing(ctx, record.UserID, record.Scope, record.IdempotencyKey, requestHash, now); err != nil {
+			return Decision{}, err
+		}
+		return Decision{Type: DecisionProceed}, nil
+	}
+
+	if record.RequestHash != requestHash {
+		return Decision{}, types.NewAppError(
+			types.ErrCodeValidation,
+			"幂等键已用于不同请求",
+			ErrKeyReusedWithDifferentRequest,
+		)
+	}
+
+	switch record.State {
+	case StateCompleted:
+		return Decision{
+			Type:         DecisionReplay,
+			StatusCode:   record.StatusCode,
+			ResponseBody: append([]byte(nil), record.ResponseBody...),
+		}, nil
+	case StateProcessing:
+		return Decision{Type: DecisionProcessing}, nil
+	default:
+		return Decision{}, fmt.Errorf("unknown idempotency state %q", record.State)
+	}
+}
+
+// Complete stores the successful response for future replays.
+func (s *Service) Complete(ctx context.Context, userID uint, scope, key string, statusCode int, responseBody []byte) error {
+	return s.repo.Complete(ctx, userID, scope, key, statusCode, responseBody)
+}
+
+// Release deletes an in-flight key so failed requests can be retried.
+func (s *Service) Release(ctx context.Context, userID uint, scope, key string) error {
+	return s.repo.DeleteProcessing(ctx, userID, scope, key)
+}

@@ -4,22 +4,34 @@
 package warehouse
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/types"
 )
+
+// AuditLogger is the narrow audit contract consumed by the warehouse handler.
+type AuditLogger interface {
+	Log(ctx context.Context, e audit.Entry) error
+}
 
 // Handler handles HTTP requests for warehouse endpoints.
 type Handler struct {
 	warehouseSvc *WarehouseService
+	auditSvc     AuditLogger
 }
 
 // NewHandler creates a new warehouse Handler.
-func NewHandler(warehouseSvc *WarehouseService) *Handler {
-	return &Handler{warehouseSvc: warehouseSvc}
+func NewHandler(warehouseSvc *WarehouseService, auditSvc ...AuditLogger) *Handler {
+	h := &Handler{warehouseSvc: warehouseSvc}
+	if len(auditSvc) > 0 {
+		h.auditSvc = auditSvc[0]
+	}
+	return h
 }
 
 // --- Warehouse CRUD ---
@@ -192,6 +204,10 @@ func (h *Handler) BindUsers(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionBind, audit.ResourceUserWarehouse, nil, "绑定用户到仓库", map[string]any{
+		"warehouseID": id,
+		"userIDs":     req.UserIDs,
+	})
 	types.OK(c, nil)
 }
 
@@ -221,6 +237,10 @@ func (h *Handler) UnbindUser(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUnbind, audit.ResourceUserWarehouse, nil, "解绑用户与仓库", map[string]any{
+		"warehouseID": warehouseID,
+		"userID":      userID,
+	})
 	types.OKNoContent(c)
 }
 
@@ -294,6 +314,10 @@ func (h *Handler) SetDefaultWarehouse(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceUserWarehouse, nil, "设置默认仓库", map[string]any{
+		"warehouseID": req.WarehouseID,
+		"userID":      userID,
+	})
 	types.OK(c, nil)
 }
 
@@ -332,4 +356,19 @@ func parseID(c *gin.Context, param string) (uint, error) {
 		return 0, appErr
 	}
 	return uint(id), nil
+}
+
+func (h *Handler) auditSuccess(c *gin.Context, action, resource string, resourceID *uint, description string, after map[string]any) {
+	if h.auditSvc == nil {
+		return
+	}
+	_ = h.auditSvc.Log(c.Request.Context(), audit.Entry{
+		Actor:       audit.ActorFromContext(c),
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  resourceID,
+		Description: description,
+		After:       after,
+		Result:      audit.ResultSuccess,
+	})
 }

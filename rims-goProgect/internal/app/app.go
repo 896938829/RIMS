@@ -10,6 +10,7 @@ import (
 
 	"rims-go/internal/config"
 	"rims-go/internal/db"
+	"rims-go/internal/idempotency"
 	"rims-go/internal/modules/audit"
 	"rims-go/internal/modules/document"
 	"rims-go/internal/modules/file"
@@ -53,6 +54,7 @@ func Run() error {
 			&document.InventoryTransaction{},
 			&file.FileAttachment{},
 			&audit.AuditLog{},
+			&idempotency.Record{},
 		); err != nil {
 			return fmt.Errorf("auto migrate: %w", err)
 		}

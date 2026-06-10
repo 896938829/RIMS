@@ -4,6 +4,7 @@
 package file
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,17 +12,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/types"
 )
 
+// AuditLogger is the narrow audit contract consumed by the file handler.
+type AuditLogger interface {
+	Log(ctx context.Context, e audit.Entry) error
+}
+
 // Handler handles HTTP requests for file attachment endpoints.
 type Handler struct {
-	svc *FileService
+	svc      *FileService
+	auditSvc AuditLogger
 }
 
 // NewHandler creates a new file Handler.
-func NewHandler(svc *FileService) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *FileService, auditSvc ...AuditLogger) *Handler {
+	h := &Handler{svc: svc}
+	if len(auditSvc) > 0 {
+		h.auditSvc = auditSvc[0]
+	}
+	return h
 }
 
 // Upload godoc
@@ -70,7 +82,7 @@ func (h *Handler) Upload(c *gin.Context) {
 		Reader:       f,
 		DeclaredSize: fh.Size,
 	}
-	record, err := h.svc.Upload(c.Request.Context(), types.GetUserID(c), req)
+	record, err := h.svc.Upload(c.Request.Context(), fileActorFromContext(c), req)
 	if err != nil {
 		types.FailFromError(c, err)
 		return
@@ -103,7 +115,7 @@ func (h *Handler) List(c *gin.Context) {
 		filter.BusinessID = &bid
 	}
 	page := types.PageRequest{Page: req.Page, PageSize: req.PageSize}
-	result, err := h.svc.List(c.Request.Context(), filter, page, types.IsAdmin(c))
+	result, err := h.svc.ListForRead(c.Request.Context(), filter, page, types.IsAdmin(c), fileActorFromContext(c))
 	if err != nil {
 		types.FailFromError(c, err)
 		return
@@ -125,7 +137,7 @@ func (h *Handler) Get(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	f, err := h.svc.Get(c.Request.Context(), id)
+	f, err := h.svc.GetForRead(c.Request.Context(), id, fileActorFromContext(c))
 	if err != nil {
 		types.FailFromError(c, err)
 		return
@@ -148,17 +160,7 @@ func (h *Handler) Download(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	// 预取元数据做 ACL：私有文件仅上传者或 admin 可下载
-	meta, err := h.svc.Get(c.Request.Context(), id)
-	if err != nil {
-		types.FailFromError(c, err)
-		return
-	}
-	if !meta.IsPublic && !types.IsAdmin(c) && meta.CreatedBy != types.GetUserID(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
-	rc, f, err := h.svc.OpenForDownload(c.Request.Context(), id)
+	rc, f, err := h.svc.OpenForDownload(c.Request.Context(), id, fileActorFromContext(c))
 	if err != nil {
 		types.FailFromError(c, err)
 		return
@@ -191,11 +193,19 @@ func (h *Handler) Delete(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	if err := h.svc.Delete(c.Request.Context(), id, types.GetUserID(c), types.IsAdmin(c)); err != nil {
+	if err := h.svc.Delete(c.Request.Context(), id, fileActorFromContext(c)); err != nil {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceFile, id, "删除文件", nil)
 	types.OKNoContent(c)
+}
+
+func fileActorFromContext(c *gin.Context) FileActor {
+	return FileActor{
+		UserID:  types.GetUserID(c),
+		IsAdmin: types.IsAdmin(c),
+	}
 }
 
 // parseID extracts and validates an unsigned integer path parameter.
@@ -208,6 +218,22 @@ func parseID(c *gin.Context, param string) (uint, error) {
 		return 0, appErr
 	}
 	return uint(id), nil
+}
+
+func (h *Handler) auditSuccess(c *gin.Context, action, resource string, resourceID uint, description string, after map[string]any) {
+	if h.auditSvc == nil {
+		return
+	}
+	id := resourceID
+	_ = h.auditSvc.Log(c.Request.Context(), audit.Entry{
+		Actor:       audit.ActorFromContext(c),
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  &id,
+		Description: description,
+		After:       after,
+		Result:      audit.ResultSuccess,
+	})
 }
 
 // sanitizeFilename strips characters that would break a Content-Disposition

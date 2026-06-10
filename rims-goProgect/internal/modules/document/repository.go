@@ -5,8 +5,10 @@ package document
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"rims-go/internal/db"
 	"rims-go/internal/types"
@@ -18,9 +20,12 @@ import (
 type DocumentRepository interface {
 	Create(ctx context.Context, doc *Document) error
 	GetByID(ctx context.Context, id uint) (*Document, error)
+	GetByIDForUpdate(ctx context.Context, id uint) (*Document, error)
 	GetByDocNo(ctx context.Context, docNo string) (*Document, error)
 	List(ctx context.Context, warehouseID uint, docType int8, page types.PageRequest) ([]Document, int64, error)
 	Update(ctx context.Context, doc *Document) error
+	LockDocNoSequence(ctx context.Context, prefix string, dateStr string) error
+	LockReturnQuantity(ctx context.Context, refDocID uint, productID uint) error
 	GetMaxDocNo(ctx context.Context, prefix string, dateStr string) (string, error)
 }
 
@@ -44,6 +49,16 @@ func (r *documentRepo) Create(ctx context.Context, doc *Document) error {
 func (r *documentRepo) GetByID(ctx context.Context, id uint) (*Document, error) {
 	var doc Document
 	if err := r.getDB(ctx).First(&doc, id).Error; err != nil {
+		return nil, err
+	}
+	return &doc, nil
+}
+
+func (r *documentRepo) GetByIDForUpdate(ctx context.Context, id uint) (*Document, error) {
+	var doc Document
+	if err := r.getDB(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&doc, id).Error; err != nil {
 		return nil, err
 	}
 	return &doc, nil
@@ -86,6 +101,19 @@ func (r *documentRepo) List(ctx context.Context, warehouseID uint, docType int8,
 
 func (r *documentRepo) Update(ctx context.Context, doc *Document) error {
 	return r.getDB(ctx).Save(doc).Error
+}
+
+func (r *documentRepo) LockDocNoSequence(ctx context.Context, prefix string, dateStr string) error {
+	return r.getDB(ctx).
+		Exec("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", "rims_document_no", prefix+dateStr).
+		Error
+}
+
+func (r *documentRepo) LockReturnQuantity(ctx context.Context, refDocID uint, productID uint) error {
+	lockKey := fmt.Sprintf("%d:%d", refDocID, productID)
+	return r.getDB(ctx).
+		Exec("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", "rims_return_quantity", lockKey).
+		Error
 }
 
 func (r *documentRepo) GetMaxDocNo(ctx context.Context, prefix string, dateStr string) (string, error) {

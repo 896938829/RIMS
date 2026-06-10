@@ -70,6 +70,9 @@ func (h *Handler) Login(c *gin.Context) {
 // the AppError code/message. Errors from the audit write itself are swallowed
 // since login is not inside a business transaction (no rollback to do).
 func (h *Handler) auditLogin(c *gin.Context, username string, resp *LoginResponse, loginErr error) {
+	if h.auditSvc == nil {
+		return
+	}
 	entry := audit.Entry{
 		Actor: audit.Actor{
 			Username:  username,
@@ -124,9 +127,15 @@ func (h *Handler) CreateUser(c *gin.Context) {
 	}
 	resp, err := h.userSvc.Create(c.Request.Context(), req)
 	if err != nil {
+		h.auditAppError(c, audit.ActionCreate, audit.ResourceUser, nil, "创建用户失败", nil, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceUser, resp.ID, "创建用户", map[string]any{
+		"username": resp.Username,
+		"roleID":   resp.RoleID,
+		"status":   resp.Status,
+	})
 	types.OKCreated(c, resp)
 }
 
@@ -202,9 +211,15 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 	resp, err := h.userSvc.Update(c.Request.Context(), id, req)
 	if err != nil {
+		h.auditAppError(c, audit.ActionUpdate, audit.ResourceUser, &id, "更新用户失败", nil, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceUser, id, "更新用户", map[string]any{
+		"realName": resp.RealName,
+		"roleID":   resp.RoleID,
+		"status":   resp.Status,
+	})
 	types.OK(c, resp)
 }
 
@@ -225,9 +240,11 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 		return
 	}
 	if err := h.userSvc.Delete(c.Request.Context(), id); err != nil {
+		h.auditAppError(c, audit.ActionDelete, audit.ResourceUser, &id, "删除用户失败", nil, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceUser, id, "删除用户", nil)
 	types.OKNoContent(c)
 }
 
@@ -314,6 +331,10 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 // @Success 201 {object} types.Response{data=RoleResponse}
 // @Router /api/v1/roles [post]
 func (h *Handler) CreateRole(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	var req CreateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -321,9 +342,18 @@ func (h *Handler) CreateRole(c *gin.Context) {
 	}
 	resp, err := h.roleSvc.Create(c.Request.Context(), req)
 	if err != nil {
+		h.auditAppError(c, audit.ActionCreate, audit.ResourceRole, nil, "创建角色失败", map[string]any{
+			"code": req.Code,
+			"name": req.Name,
+		}, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceRole, resp.ID, "创建角色", map[string]any{
+		"code":        resp.Code,
+		"name":        resp.Name,
+		"description": resp.Description,
+	})
 	types.OKCreated(c, resp)
 }
 
@@ -375,6 +405,10 @@ func (h *Handler) GetRole(c *gin.Context) {
 // @Success 200 {object} types.Response{data=RoleResponse}
 // @Router /api/v1/roles/{id} [put]
 func (h *Handler) UpdateRole(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -386,9 +420,14 @@ func (h *Handler) UpdateRole(c *gin.Context) {
 	}
 	resp, err := h.roleSvc.Update(c.Request.Context(), id, req)
 	if err != nil {
+		h.auditAppError(c, audit.ActionUpdate, audit.ResourceRole, &id, "更新角色失败", nil, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceRole, id, "更新角色", map[string]any{
+		"name":        resp.Name,
+		"description": resp.Description,
+	})
 	types.OK(c, resp)
 }
 
@@ -400,14 +439,20 @@ func (h *Handler) UpdateRole(c *gin.Context) {
 // @Success 204
 // @Router /api/v1/roles/{id} [delete]
 func (h *Handler) DeleteRole(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
 	}
 	if err := h.roleSvc.Delete(c.Request.Context(), id); err != nil {
+		h.auditAppError(c, audit.ActionDelete, audit.ResourceRole, &id, "删除角色失败", nil, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceRole, id, "删除角色", nil)
 	types.OKNoContent(c)
 }
 
@@ -422,6 +467,10 @@ func (h *Handler) DeleteRole(c *gin.Context) {
 // @Success 200 {object} types.Response
 // @Router /api/v1/roles/{id}/permissions [put]
 func (h *Handler) AssignPermissions(c *gin.Context) {
+	if !types.IsAdmin(c) {
+		types.FailFromError(c, types.ErrForbidden())
+		return
+	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -432,9 +481,17 @@ func (h *Handler) AssignPermissions(c *gin.Context) {
 		return
 	}
 	if err := h.roleSvc.AssignPermissions(c.Request.Context(), id, req); err != nil {
+		h.auditAppError(c, audit.ActionAssign, audit.ResourcePermission, &id, "分配角色权限失败", map[string]any{
+			"roleID":        id,
+			"permissionIDs": req.PermissionIDs,
+		}, err)
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionAssign, audit.ResourcePermission, id, "分配角色权限", map[string]any{
+		"roleID":        id,
+		"permissionIDs": req.PermissionIDs,
+	})
 	types.OK(c, nil)
 }
 
@@ -464,4 +521,41 @@ func parseID(c *gin.Context, param string) (uint, error) {
 		return 0, appErr
 	}
 	return uint(id), nil
+}
+
+func (h *Handler) auditSuccess(c *gin.Context, action, resource string, resourceID uint, description string, after map[string]any) {
+	if h.auditSvc == nil {
+		return
+	}
+	id := resourceID
+	_ = h.auditSvc.Log(c.Request.Context(), audit.Entry{
+		Actor:       audit.ActorFromContext(c),
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  &id,
+		Description: description,
+		After:       after,
+		Result:      audit.ResultSuccess,
+	})
+}
+
+func (h *Handler) auditAppError(c *gin.Context, action, resource string, resourceID *uint, description string, after map[string]any, err error) {
+	if h.auditSvc == nil {
+		return
+	}
+	var appErr *types.AppError
+	if !errors.As(err, &appErr) {
+		return
+	}
+	_ = h.auditSvc.Log(c.Request.Context(), audit.Entry{
+		Actor:       audit.ActorFromContext(c),
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  resourceID,
+		Description: description,
+		After:       after,
+		Result:      audit.ResultFailure,
+		ErrorCode:   appErr.Code,
+		ErrorMsg:    appErr.Message,
+	})
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -179,7 +180,7 @@ func (s *DocumentService) List(ctx context.Context, warehouseID uint, docType in
 func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, warehouseID, id uint, isAdmin bool) error {
 	userID := actor.UserID
 	return s.txRunner(ctx, func(txCtx context.Context) error {
-		doc, err := s.docRepo.GetByID(txCtx, id)
+		doc, err := s.docRepo.GetByIDForUpdate(txCtx, id)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrNotFound("单据")
@@ -256,8 +257,8 @@ func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, wareh
 			DocNo:       doc.DocNo,
 			Description: fmt.Sprintf("完成单据 %s", doc.DocNo),
 			Before: map[string]any{
-				"status":   beforeStatus,
-				"docType":  doc.DocType,
+				"status":    beforeStatus,
+				"docType":   doc.DocType,
 				"lineCount": len(lines),
 			},
 			After: map[string]any{
@@ -298,7 +299,7 @@ func (s *DocumentService) ConfirmStocktake(ctx context.Context, userID, warehous
 // SettleStocktake transitions a confirmed stocktake to settled and applies inventory diffs.
 func (s *DocumentService) SettleStocktake(ctx context.Context, userID, warehouseID, id uint) error {
 	return s.txRunner(ctx, func(txCtx context.Context) error {
-		doc, err := s.docRepo.GetByID(txCtx, id)
+		doc, err := s.docRepo.GetByIDForUpdate(txCtx, id)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrNotFound("单据")
@@ -428,7 +429,7 @@ func (s *DocumentService) executeInbound(ctx context.Context, doc *Document, lin
 
 func (s *DocumentService) executeSales(ctx context.Context, doc *Document, lines []DocumentLine, userID uint, now time.Time) error {
 	for _, line := range lines {
-		inv, err := s.invRepo.GetByWarehouseAndProduct(ctx, doc.WarehouseID, line.ProductID)
+		inv, err := s.getInventoryForUpdate(ctx, doc.WarehouseID, line.ProductID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrInsufficientStock()
@@ -505,6 +506,10 @@ func (s *DocumentService) executeReturn(ctx context.Context, doc *Document, line
 			return types.ErrValidation(fmt.Sprintf("商品(%s)不在原销售单中", line.ProductCode))
 		}
 
+		if err := s.docRepo.LockReturnQuantity(ctx, doc.RefDocID, line.ProductID); err != nil {
+			return types.ErrSystem(err)
+		}
+
 		alreadyReturned, err := s.lineRepo.SumReturnedQty(ctx, doc.RefDocID, line.ProductID)
 		if err != nil {
 			return types.ErrSystem(err)
@@ -555,9 +560,13 @@ func (s *DocumentService) executeTransfer(ctx context.Context, doc *Document, li
 		return types.ErrValidation("调拨目标仓库不能与源仓库相同")
 	}
 
+	if err := s.lockInventoryItems(ctx, transferInventoryLockKeys(doc, lines)...); err != nil {
+		return types.ErrSystem(err)
+	}
+
 	for _, line := range lines {
 		// Deduct from source warehouse
-		srcInv, err := s.invRepo.GetByWarehouseAndProduct(ctx, doc.WarehouseID, line.ProductID)
+		srcInv, err := s.getInventoryForUpdate(ctx, doc.WarehouseID, line.ProductID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrInsufficientStock()
@@ -630,7 +639,7 @@ func (s *DocumentService) executeTransfer(ctx context.Context, doc *Document, li
 func (s *DocumentService) executeConversion(ctx context.Context, doc *Document, lines []DocumentLine, userID uint, now time.Time) error {
 	for _, line := range lines {
 		// Validate non-std inventory
-		ns, err := s.nonStdRepo.GetByID(ctx, line.NonStdInvID)
+		ns, err := s.nonStdRepo.GetByIDForUpdate(ctx, line.NonStdInvID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrNotFound("非标库存")
@@ -805,6 +814,10 @@ func (s *DocumentService) generateDocNo(ctx context.Context, docType int8) (stri
 	prefix := docNoPrefixes[docType]
 	dateStr := time.Now().Format("20060102")
 
+	if err := s.docRepo.LockDocNoSequence(ctx, prefix, dateStr); err != nil {
+		return "", err
+	}
+
 	maxDocNo, err := s.docRepo.GetMaxDocNo(ctx, prefix, dateStr)
 	if err != nil {
 		return "", err
@@ -822,8 +835,58 @@ func (s *DocumentService) generateDocNo(ctx context.Context, docType int8) (stri
 	return fmt.Sprintf("%s%s%03d", prefix, dateStr, seq), nil
 }
 
+type inventoryLockKey struct {
+	warehouseID uint
+	productID   uint
+}
+
+func transferInventoryLockKeys(doc *Document, lines []DocumentLine) []inventoryLockKey {
+	keys := make([]inventoryLockKey, 0, len(lines)*2)
+	for _, line := range lines {
+		keys = append(keys,
+			inventoryLockKey{warehouseID: doc.WarehouseID, productID: line.ProductID},
+			inventoryLockKey{warehouseID: doc.ToWarehouseID, productID: line.ProductID},
+		)
+	}
+	return keys
+}
+
+func (s *DocumentService) lockInventoryItems(ctx context.Context, keys ...inventoryLockKey) error {
+	keys = sortedUniqueInventoryLockKeys(keys)
+	for _, key := range keys {
+		if err := s.invRepo.LockItem(ctx, key.warehouseID, key.productID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sortedUniqueInventoryLockKeys(keys []inventoryLockKey) []inventoryLockKey {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].warehouseID == keys[j].warehouseID {
+			return keys[i].productID < keys[j].productID
+		}
+		return keys[i].warehouseID < keys[j].warehouseID
+	})
+
+	unique := keys[:0]
+	for _, key := range keys {
+		if len(unique) == 0 || unique[len(unique)-1] != key {
+			unique = append(unique, key)
+		}
+	}
+	return unique
+}
+
+func (s *DocumentService) getInventoryForUpdate(ctx context.Context, warehouseID, productID uint) (*product.Inventory, error) {
+	if err := s.invRepo.LockItem(ctx, warehouseID, productID); err != nil {
+		return nil, err
+	}
+	return s.invRepo.GetByWarehouseAndProductForUpdate(ctx, warehouseID, productID)
+}
+
 func (s *DocumentService) getOrCreateInventory(ctx context.Context, warehouseID, productID, userID uint) (*product.Inventory, error) {
-	inv, err := s.invRepo.GetByWarehouseAndProduct(ctx, warehouseID, productID)
+	inv, err := s.getInventoryForUpdate(ctx, warehouseID, productID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			inv = &product.Inventory{

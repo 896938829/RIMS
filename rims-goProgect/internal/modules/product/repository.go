@@ -5,8 +5,10 @@ package product
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"rims-go/internal/db"
 	"rims-go/internal/types"
@@ -107,11 +109,14 @@ func (r *productRepo) Delete(ctx context.Context, id uint) error {
 type InventoryRepository interface {
 	Create(ctx context.Context, inv *Inventory) error
 	GetByID(ctx context.Context, id uint) (*Inventory, error)
+	LockItem(ctx context.Context, warehouseID, productID uint) error
+	GetByWarehouseAndProductForUpdate(ctx context.Context, warehouseID, productID uint) (*Inventory, error)
 	GetByWarehouseAndProduct(ctx context.Context, warehouseID, productID uint) (*Inventory, error)
 	ExistsByProductID(ctx context.Context, productID uint) (bool, error)
 	ListByWarehouse(ctx context.Context, warehouseID uint, page types.PageRequest) ([]Inventory, int64, error)
 	ListAlerts(ctx context.Context, warehouseID uint, page types.PageRequest) ([]Inventory, int64, error)
 	Update(ctx context.Context, inv *Inventory) error
+	UpdateSettings(ctx context.Context, id uint, alertThreshold *int, status *int8, updatedBy uint) error
 	Delete(ctx context.Context, id uint) error
 }
 
@@ -135,6 +140,25 @@ func (r *inventoryRepo) Create(ctx context.Context, inv *Inventory) error {
 func (r *inventoryRepo) GetByID(ctx context.Context, id uint) (*Inventory, error) {
 	var inv Inventory
 	err := r.getDB(ctx).Preload("Product").First(&inv, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
+func (r *inventoryRepo) LockItem(ctx context.Context, warehouseID, productID uint) error {
+	lockKey := fmt.Sprintf("%d:%d", warehouseID, productID)
+	return r.getDB(ctx).
+		Exec("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", "rims_inventory", lockKey).
+		Error
+}
+
+func (r *inventoryRepo) GetByWarehouseAndProductForUpdate(ctx context.Context, warehouseID, productID uint) (*Inventory, error) {
+	var inv Inventory
+	err := r.getDB(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("warehouse_id = ? AND product_id = ?", warehouseID, productID).
+		First(&inv).Error
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +235,25 @@ func (r *inventoryRepo) Update(ctx context.Context, inv *Inventory) error {
 	return r.getDB(ctx).Save(inv).Error
 }
 
+func (r *inventoryRepo) UpdateSettings(ctx context.Context, id uint, alertThreshold *int, status *int8, updatedBy uint) error {
+	updates := map[string]any{
+		"updated_by": updatedBy,
+	}
+	if alertThreshold != nil {
+		updates["alert_threshold"] = *alertThreshold
+	}
+	if status != nil {
+		updates["status"] = *status
+	} else if alertThreshold != nil {
+		threshold := *alertThreshold
+		updates["status"] = gorm.Expr(
+			"CASE WHEN ? > 0 AND quantity <= ? THEN ? WHEN status = ? THEN ? ELSE status END",
+			threshold, threshold, int8(2), int8(2), int8(1),
+		)
+	}
+	return r.getDB(ctx).Model(&Inventory{}).Where("id = ?", id).Updates(updates).Error
+}
+
 func (r *inventoryRepo) Delete(ctx context.Context, id uint) error {
 	return r.getDB(ctx).Delete(&Inventory{}, id).Error
 }
@@ -221,6 +264,7 @@ func (r *inventoryRepo) Delete(ctx context.Context, id uint) error {
 type NonStdInventoryRepository interface {
 	Create(ctx context.Context, ns *NonStdInventory) error
 	GetByID(ctx context.Context, id uint) (*NonStdInventory, error)
+	GetByIDForUpdate(ctx context.Context, id uint) (*NonStdInventory, error)
 	GetByTempLabel(ctx context.Context, tempLabel string) (*NonStdInventory, error)
 	ListByWarehouse(ctx context.Context, warehouseID uint, page types.PageRequest) ([]NonStdInventory, int64, error)
 	Update(ctx context.Context, ns *NonStdInventory) error
@@ -247,6 +291,17 @@ func (r *nonStdRepo) Create(ctx context.Context, ns *NonStdInventory) error {
 func (r *nonStdRepo) GetByID(ctx context.Context, id uint) (*NonStdInventory, error) {
 	var ns NonStdInventory
 	err := r.getDB(ctx).First(&ns, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &ns, nil
+}
+
+func (r *nonStdRepo) GetByIDForUpdate(ctx context.Context, id uint) (*NonStdInventory, error) {
+	var ns NonStdInventory
+	err := r.getDB(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&ns, id).Error
 	if err != nil {
 		return nil, err
 	}

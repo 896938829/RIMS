@@ -261,26 +261,19 @@ func (s *ProductService) UpdateInventory(ctx context.Context, userID, warehouseI
 		return nil, types.ErrNotFound("库存记录")
 	}
 
-	if req.AlertThreshold != nil {
-		inv.AlertThreshold = *req.AlertThreshold
-	}
-	if req.Status != nil {
-		inv.Status = *req.Status
-	}
-
-	// Auto-calculate alert status when threshold changes
-	if req.AlertThreshold != nil && req.Status == nil {
-		if inv.AlertThreshold > 0 && inv.Quantity <= inv.AlertThreshold {
-			inv.Status = 2 // low stock
-		} else if inv.Status == 2 {
-			inv.Status = 1 // back to normal
-		}
-	}
-
-	inv.UpdatedBy = userID
-
-	if err := s.inventoryRepo.Update(ctx, inv); err != nil {
+	if err := s.inventoryRepo.UpdateSettings(ctx, inv.ID, req.AlertThreshold, req.Status, userID); err != nil {
 		return nil, types.ErrSystem(err)
+	}
+
+	inv, err = s.inventoryRepo.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, types.ErrNotFound("库存记录")
+		}
+		return nil, types.ErrSystem(err)
+	}
+	if inv.WarehouseID != warehouseID {
+		return nil, types.ErrNotFound("库存记录")
 	}
 
 	resp := ToInventoryResponse(inv)
@@ -431,7 +424,7 @@ func (s *ProductService) DeleteNonStd(ctx context.Context, warehouseID, id uint)
 func (s *ProductService) ConvertNonStd(ctx context.Context, userID, warehouseID, nonStdID uint, req ConvertNonStdRequest) error {
 	return s.txRunner(ctx, func(txCtx context.Context) error {
 		// 1. Get and validate non-standard inventory
-		ns, err := s.nonStdRepo.GetByID(txCtx, nonStdID)
+		ns, err := s.nonStdRepo.GetByIDForUpdate(txCtx, nonStdID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return types.ErrNotFound("非标库存")
@@ -463,7 +456,10 @@ func (s *ProductService) ConvertNonStd(ctx context.Context, userID, warehouseID,
 		}
 
 		// 3. Get or create inventory record
-		inv, err := s.inventoryRepo.GetByWarehouseAndProduct(txCtx, warehouseID, req.ProductID)
+		if err := s.inventoryRepo.LockItem(txCtx, warehouseID, req.ProductID); err != nil {
+			return types.ErrSystem(err)
+		}
+		inv, err := s.inventoryRepo.GetByWarehouseAndProductForUpdate(txCtx, warehouseID, req.ProductID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				inv = &Inventory{

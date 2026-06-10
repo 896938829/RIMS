@@ -4,22 +4,34 @@
 package product
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 
+	"rims-go/internal/modules/audit"
 	"rims-go/internal/types"
 )
+
+// AuditLogger is the narrow audit contract consumed by the product handler.
+type AuditLogger interface {
+	Log(ctx context.Context, e audit.Entry) error
+}
 
 // Handler handles HTTP requests for product, inventory, and non-standard inventory endpoints.
 type Handler struct {
 	productSvc *ProductService
+	auditSvc   AuditLogger
 }
 
 // NewHandler creates a new product Handler.
-func NewHandler(productSvc *ProductService) *Handler {
-	return &Handler{productSvc: productSvc}
+func NewHandler(productSvc *ProductService, auditSvc ...AuditLogger) *Handler {
+	h := &Handler{productSvc: productSvc}
+	if len(auditSvc) > 0 {
+		h.auditSvc = auditSvc[0]
+	}
+	return h
 }
 
 // --- Product CRUD ---
@@ -164,6 +176,7 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceProduct, id, "更新商品", productUpdateAuditDetails(req))
 	types.OK(c, resp)
 }
 
@@ -275,6 +288,7 @@ func (h *Handler) UpdateInventory(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceInventory, id, "更新库存设置", inventoryUpdateAuditDetails(req))
 	types.OK(c, resp)
 }
 
@@ -488,6 +502,11 @@ func (h *Handler) ConvertNonStd(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionConvert, audit.ResourceNonStdInventory, id, "非标转标准库存", map[string]any{
+		"warehouseID": warehouseID,
+		"productID":   req.ProductID,
+		"quantity":    req.Quantity,
+	})
 	types.OK(c, nil)
 }
 
@@ -501,4 +520,42 @@ func parseID(c *gin.Context, param string) (uint, error) {
 		return 0, appErr
 	}
 	return uint(id), nil
+}
+
+func (h *Handler) auditSuccess(c *gin.Context, action, resource string, resourceID uint, description string, after map[string]any) {
+	if h.auditSvc == nil {
+		return
+	}
+	id := resourceID
+	_ = h.auditSvc.Log(c.Request.Context(), audit.Entry{
+		Actor:       audit.ActorFromContext(c),
+		Action:      action,
+		Resource:    resource,
+		ResourceID:  &id,
+		Description: description,
+		After:       after,
+		Result:      audit.ResultSuccess,
+	})
+}
+
+func productUpdateAuditDetails(req UpdateProductRequest) map[string]any {
+	details := map[string]any{}
+	if req.CostPrice != nil {
+		details["costPrice"] = *req.CostPrice
+	}
+	if req.Status != nil {
+		details["status"] = *req.Status
+	}
+	return details
+}
+
+func inventoryUpdateAuditDetails(req UpdateInventoryRequest) map[string]any {
+	details := map[string]any{}
+	if req.AlertThreshold != nil {
+		details["alertThreshold"] = *req.AlertThreshold
+	}
+	if req.Status != nil {
+		details["status"] = *req.Status
+	}
+	return details
 }

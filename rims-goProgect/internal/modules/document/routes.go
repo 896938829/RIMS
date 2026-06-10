@@ -9,15 +9,15 @@ import "github.com/gin-gonic/gin"
 func RegisterRoutes(
 	rg *gin.RouterGroup,
 	handler *Handler,
-	authMw, whScope gin.HandlerFunc,
+	authMw, whScope, idemMw gin.HandlerFunc,
 ) {
 	// Documents (warehouse-scoped)
 	docs := rg.Group("/documents")
 	docs.Use(authMw, whScope)
-	docs.POST("", handler.CreateDocument)
+	docs.POST("", idemMw, handler.CreateDocument)
 	docs.GET("", handler.ListDocuments)
 	docs.GET("/:id", handler.GetDocument)
-	docs.POST("/:id/complete", handler.CompleteDocument)
+	docs.POST("/:id/complete", idemMw, handler.CompleteDocument)
 	docs.POST("/:id/confirm", handler.ConfirmStocktake)
 	docs.POST("/:id/settle", handler.SettleStocktake)
 

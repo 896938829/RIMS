@@ -11,11 +11,11 @@ import "github.com/gin-gonic/gin"
 func RegisterRoutes(
 	rg *gin.RouterGroup,
 	handler *Handler,
-	authMw gin.HandlerFunc,
+	authMw, idemMw gin.HandlerFunc,
 ) {
 	files := rg.Group("/files")
 	files.Use(authMw)
-	files.POST("/upload", handler.Upload)
+	files.POST("/upload", idemMw, handler.Upload)
 	files.GET("", handler.List)
 	files.GET("/:id", handler.Get)
 	files.GET("/:id/download", handler.Download)

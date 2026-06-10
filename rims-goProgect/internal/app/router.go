@@ -6,6 +6,7 @@ package app
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -16,6 +17,7 @@ import (
 	"rims-go/internal/auth"
 	"rims-go/internal/config"
 	"rims-go/internal/db"
+	"rims-go/internal/idempotency"
 	"rims-go/internal/middleware"
 	"rims-go/internal/modules/audit"
 	"rims-go/internal/modules/document"
@@ -57,17 +59,22 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 
 	// Handlers
 	userHandler := user.NewHandler(userSvc, roleSvc, auditSvc)
-	warehouseHandler := warehouse.NewHandler(warehouseSvc)
+	warehouseHandler := warehouse.NewHandler(warehouseSvc, auditSvc)
 
 	// Warehouse scope middleware
 	whScope := middleware.WarehouseScope(userWarehouseRepo)
+
+	// Idempotency middleware for selected unsafe write endpoints.
+	idemRepo := idempotency.NewRepository(gormDB)
+	idemSvc := idempotency.NewService(idemRepo, 24*time.Hour)
+	idemMw := middleware.Idempotency(idemSvc, cfg.MaxUploadMB)
 
 	// Product module
 	productRepo := product.NewProductRepository(gormDB)
 	inventoryRepo := product.NewInventoryRepository(gormDB)
 	nonStdRepo := product.NewNonStdInventoryRepository(gormDB)
 	productSvc := product.NewProductService(productRepo, inventoryRepo, nonStdRepo, db.NewTxRunner(gormDB))
-	productHandler := product.NewHandler(productSvc)
+	productHandler := product.NewHandler(productSvc, auditSvc)
 
 	// Document module
 	docRepo := document.NewDocumentRepository(gormDB)
@@ -97,12 +104,14 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 		log.Panicf("init file storage: %v", err)
 	}
 	fileRepo := file.NewFileRepository(gormDB)
+	fileACL := fileAccessChecker{docRepo: docRepo, whRepo: userWarehouseRepo}
 	fileSvc := file.NewFileService(
 		fileRepo, localStorage,
 		cfg.MaxUploadMB, cfg.AllowedExts,
 		"/api/v1/files/%d/download",
+		fileACL,
 	)
-	fileHandler := file.NewHandler(fileSvc)
+	fileHandler := file.NewHandler(fileSvc, auditSvc)
 
 	// Serve public file objects from the local uploads directory.
 	r.Static(filePublicPrefix, localStorage.BaseDir())
@@ -117,10 +126,10 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	api := r.Group("/api/v1")
 	user.RegisterRoutes(api, userHandler, authMw)
 	warehouse.RegisterRoutes(api, warehouseHandler, authMw)
-	product.RegisterRoutes(api, productHandler, authMw, whScope)
-	document.RegisterRoutes(api, docHandler, authMw, whScope)
+	product.RegisterRoutes(api, productHandler, authMw, whScope, idemMw)
+	document.RegisterRoutes(api, docHandler, authMw, whScope, idemMw)
 	report.RegisterRoutes(api, reportHandler, authMw, whScope)
-	file.RegisterRoutes(api, fileHandler, authMw)
+	file.RegisterRoutes(api, fileHandler, authMw, idemMw)
 	audit.RegisterRoutes(api, auditHandler, authMw)
 
 	return r
