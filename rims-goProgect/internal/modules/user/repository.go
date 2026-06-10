@@ -100,6 +100,7 @@ type RoleRepository interface {
 	Delete(ctx context.Context, id uint) error
 	AssignPermissions(ctx context.Context, roleID uint, permIDs []uint) error
 	ListPermissions(ctx context.Context) ([]Permission, error)
+	HasPermission(ctx context.Context, roleID uint, code string) (bool, error)
 }
 
 type roleRepo struct {
@@ -171,4 +172,17 @@ func (r *roleRepo) ListPermissions(ctx context.Context) ([]Permission, error) {
 	var perms []Permission
 	err := r.getDB(ctx).Order("resource ASC, action ASC").Find(&perms).Error
 	return perms, err
+}
+
+func (r *roleRepo) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
+	var count int64
+	err := r.getDB(ctx).
+		Table("role_permissions AS rp").
+		Joins("JOIN permissions AS p ON p.id = rp.permission_id AND p.deleted_at IS NULL").
+		Where("rp.role_id = ? AND p.code = ?", roleID, code).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

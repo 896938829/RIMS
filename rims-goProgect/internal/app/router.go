@@ -51,6 +51,9 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	roleRepo := user.NewRoleRepository(gormDB)
 	warehouseRepo := warehouse.NewWarehouseRepository(gormDB)
 	userWarehouseRepo := warehouse.NewUserWarehouseRepository(gormDB)
+	permMw := func(code string) gin.HandlerFunc {
+		return middleware.Permission(roleRepo, code)
+	}
 
 	// Services
 	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc)
@@ -66,7 +69,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 
 	// Idempotency middleware for selected unsafe write endpoints.
 	idemRepo := idempotency.NewRepository(gormDB)
-	idemSvc := idempotency.NewService(idemRepo, 24*time.Hour)
+	idemSvc := idempotency.NewService(idemRepo, idempotencyTTLFromConfig(cfg))
 	idemMw := middleware.Idempotency(idemSvc, cfg.MaxUploadMB)
 
 	// Product module
@@ -124,13 +127,17 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 
 	// API v1
 	api := r.Group("/api/v1")
-	user.RegisterRoutes(api, userHandler, authMw)
-	warehouse.RegisterRoutes(api, warehouseHandler, authMw)
-	product.RegisterRoutes(api, productHandler, authMw, whScope, idemMw)
+	user.RegisterRoutes(api, userHandler, authMw, permMw)
+	warehouse.RegisterRoutes(api, warehouseHandler, authMw, permMw)
+	product.RegisterRoutes(api, productHandler, authMw, whScope, idemMw, permMw)
 	document.RegisterRoutes(api, docHandler, authMw, whScope, idemMw)
 	report.RegisterRoutes(api, reportHandler, authMw, whScope)
 	file.RegisterRoutes(api, fileHandler, authMw, idemMw)
-	audit.RegisterRoutes(api, auditHandler, authMw)
+	audit.RegisterRoutes(api, auditHandler, authMw, permMw)
 
 	return r
+}
+
+func idempotencyTTLFromConfig(cfg config.Config) time.Duration {
+	return time.Duration(cfg.IdempotencyKeyTTLHours) * time.Hour
 }

@@ -101,7 +101,7 @@ type AuditLogResponse struct {
 
 // ToAuditLogResponse converts a raw AuditLog row into its JSON shape. A
 // malformed Details JSON falls back to a nil map rather than failing the
-// request; the underlying raw text is still visible via the admin-only
+// request; the underlying raw text is still visible via the permission-guarded
 // query path if needed.
 func ToAuditLogResponse(l *AuditLog) AuditLogResponse {
 	var details map[string]any

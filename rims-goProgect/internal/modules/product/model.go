@@ -38,7 +38,7 @@ type Inventory struct {
 // TableName overrides the default table name.
 func (Inventory) TableName() string { return "inventories" }
 
-// NonStdInventory represents non-standard inventory (admin-only, per warehouse).
+// NonStdInventory represents non-standard inventory (permission-protected, per warehouse).
 type NonStdInventory struct {
 	types.AuditableModel
 	WarehouseID    uint   `gorm:"not null;index"`

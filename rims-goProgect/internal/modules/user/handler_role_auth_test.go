@@ -5,6 +5,7 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"rims-go/internal/middleware"
 	"rims-go/internal/types"
 )
 
@@ -51,65 +53,164 @@ func (roleRepoStub) ListPermissions(ctx context.Context) ([]Permission, error) {
 	return nil, nil
 }
 
-func TestRoleWriteHandlersRequireAdmin(t *testing.T) {
+func (roleRepoStub) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
+	return false, nil
+}
+
+type routePermissionChecker struct {
+	allowed map[string]bool
+	codes   []string
+}
+
+func (c *routePermissionChecker) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
+	c.codes = append(c.codes, code)
+	return c.allowed[code], nil
+}
+
+func TestRoleWriteRoutesRequirePermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	handler := NewHandler(nil, NewRoleService(roleRepoStub{}), nil)
+	checker := &routePermissionChecker{allowed: map[string]bool{}}
+	router := newRoleRouteAuthRouter(handler, checker)
 
+	tests := []struct {
+		name   string
+		method string
+		target string
+		body   string
+		code   string
+	}{
+		{
+			name:   "create role",
+			method: http.MethodPost,
+			target: "/api/v1/roles",
+			body:   `{"code":"operator","name":"Operator"}`,
+			code:   "role:create",
+		},
+		{
+			name:   "update role",
+			method: http.MethodPut,
+			target: "/api/v1/roles/1",
+			body:   `{"name":"Operator"}`,
+			code:   "role:update",
+		},
+		{
+			name:   "delete role",
+			method: http.MethodDelete,
+			target: "/api/v1/roles/1",
+			code:   "role:delete",
+		},
+		{
+			name:   "assign permissions",
+			method: http.MethodPut,
+			target: "/api/v1/roles/1/permissions",
+			body:   `{"permissionIds":[1]}`,
+			code:   "role:assign_permissions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker.codes = nil
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, w.Code, w.Body.String())
+			}
+			assertRouteAuthCode(t, w, types.ErrCodePermissionDenied)
+			if len(checker.codes) != 1 || checker.codes[0] != tt.code {
+				t.Fatalf("permission codes = %#v, want [%q]", checker.codes, tt.code)
+			}
+		})
+	}
+}
+
+func TestRoleWriteRoutesAllowRoleWithPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewHandler(nil, NewRoleService(roleRepoStub{}), nil)
 	tests := []struct {
 		name       string
 		method     string
 		target     string
 		body       string
-		params     gin.Params
-		handleFunc func(*gin.Context)
+		code       string
+		wantStatus int
 	}{
 		{
 			name:       "create role",
 			method:     http.MethodPost,
 			target:     "/api/v1/roles",
 			body:       `{"code":"operator","name":"Operator"}`,
-			handleFunc: handler.CreateRole,
+			code:       "role:create",
+			wantStatus: http.StatusCreated,
 		},
 		{
 			name:       "update role",
 			method:     http.MethodPut,
 			target:     "/api/v1/roles/1",
 			body:       `{"name":"Operator"}`,
-			params:     gin.Params{{Key: "id", Value: "1"}},
-			handleFunc: handler.UpdateRole,
+			code:       "role:update",
+			wantStatus: http.StatusOK,
 		},
 		{
 			name:       "delete role",
 			method:     http.MethodDelete,
 			target:     "/api/v1/roles/1",
-			params:     gin.Params{{Key: "id", Value: "1"}},
-			handleFunc: handler.DeleteRole,
+			code:       "role:delete",
+			wantStatus: http.StatusNoContent,
 		},
 		{
 			name:       "assign permissions",
 			method:     http.MethodPut,
 			target:     "/api/v1/roles/1/permissions",
 			body:       `{"permissionIds":[1]}`,
-			params:     gin.Params{{Key: "id", Value: "1"}},
-			handleFunc: handler.AssignPermissions,
+			code:       "role:assign_permissions",
+			wantStatus: http.StatusOK,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			checker := &routePermissionChecker{allowed: map[string]bool{tt.code: true}}
+			router := newRoleRouteAuthRouter(handler, checker)
 			w := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(w)
-			c.Params = tt.params
-			c.Set(types.CtxKeyRoleCode, "operator")
-			c.Request = httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
-			c.Request.Header.Set("Content-Type", "application/json")
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
 
-			tt.handleFunc(c)
-
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, w.Code, w.Body.String())
+			router.ServeHTTP(w, req)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d with body %s", tt.wantStatus, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func newRoleRouteAuthRouter(handler *Handler, checker *routePermissionChecker) *gin.Engine {
+	r := gin.New()
+	api := r.Group("/api/v1")
+	authMw := func(c *gin.Context) {
+		c.Set(types.CtxKeyRoleID, uint(7))
+		c.Set(types.CtxKeyRoleCode, "operator")
+		c.Next()
+	}
+	RegisterRoutes(api, handler, authMw, func(code string) gin.HandlerFunc {
+		return middleware.Permission(checker, code)
+	})
+	return r
+}
+
+func assertRouteAuthCode(t *testing.T, w *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	var resp types.Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response JSON = %q, unmarshal error: %v", w.Body.String(), err)
+	}
+	if resp.Code != want {
+		t.Fatalf("response code = %d, want %d; body=%s", resp.Code, want, w.Body.String())
 	}
 }

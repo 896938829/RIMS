@@ -10,16 +10,17 @@ func RegisterRoutes(
 	rg *gin.RouterGroup,
 	handler *Handler,
 	authMw, whScope, idemMw gin.HandlerFunc,
+	perm func(string) gin.HandlerFunc,
 ) {
 	// Product catalog (global, no warehouse scope)
 	products := rg.Group("/products")
 	products.Use(authMw)
-	products.POST("", handler.CreateProduct)
+	products.POST("", perm("product:create"), handler.CreateProduct)
 	products.GET("", handler.ListProducts)
 	products.GET("/barcode/:barcode", handler.GetProductByBarcode)
 	products.GET("/:id", handler.GetProduct)
-	products.PUT("/:id", handler.UpdateProduct)
-	products.DELETE("/:id", handler.DeleteProduct)
+	products.PUT("/:id", perm("product:update"), handler.UpdateProduct)
+	products.DELETE("/:id", perm("product:delete"), handler.DeleteProduct)
 
 	// Standard inventory (warehouse-scoped)
 	inventory := rg.Group("/inventory")
@@ -27,15 +28,15 @@ func RegisterRoutes(
 	inventory.GET("", handler.ListInventory)
 	inventory.GET("/alerts", handler.ListAlerts)
 	inventory.GET("/:id", handler.GetInventory)
-	inventory.PUT("/:id", handler.UpdateInventory)
+	inventory.PUT("/:id", perm("inventory:update"), handler.UpdateInventory)
 
-	// Non-standard inventory (warehouse-scoped, all admin-only in handlers)
+	// Non-standard inventory (warehouse-scoped, permission-protected)
 	nonStd := rg.Group("/non-std-inventory")
 	nonStd.Use(authMw, whScope)
-	nonStd.POST("", handler.CreateNonStd)
-	nonStd.GET("", handler.ListNonStd)
-	nonStd.GET("/:id", handler.GetNonStd)
-	nonStd.PUT("/:id", handler.UpdateNonStd)
-	nonStd.DELETE("/:id", handler.DeleteNonStd)
-	nonStd.POST("/:id/convert", idemMw, handler.ConvertNonStd)
+	nonStd.POST("", perm("non_std:create"), handler.CreateNonStd)
+	nonStd.GET("", perm("non_std:read"), handler.ListNonStd)
+	nonStd.GET("/:id", perm("non_std:read"), handler.GetNonStd)
+	nonStd.PUT("/:id", perm("non_std:update"), handler.UpdateNonStd)
+	nonStd.DELETE("/:id", perm("non_std:delete"), handler.DeleteNonStd)
+	nonStd.POST("/:id/convert", perm("non_std:convert"), idemMw, handler.ConvertNonStd)
 }

@@ -13,8 +13,8 @@ import (
 )
 
 // Handler handles HTTP requests for audit log query endpoints. All endpoints
-// are admin-only; non-admin callers receive 10002 权限不足. No write endpoint
-// is exposed — audit records only originate from inside the service layer.
+// require the audit:read permission. No write endpoint is exposed — audit
+// records only originate from inside the service layer.
 type Handler struct {
 	svc *AuditService
 }
@@ -26,7 +26,7 @@ func NewHandler(svc *AuditService) *Handler {
 
 // List godoc
 // @Summary 审计日志列表
-// @Description 分页查询审计日志，支持按用户/仓库/资源/动作/单据号/时间范围过滤。仅管理员可访问。
+// @Description 分页查询审计日志，支持按用户/仓库/资源/动作/单据号/时间范围过滤。需要 audit:read 权限。
 // @Tags 审计
 // @Security BearerAuth
 // @Produce json
@@ -47,10 +47,6 @@ func NewHandler(svc *AuditService) *Handler {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/audit/logs [get]
 func (h *Handler) List(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req ListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -66,7 +62,7 @@ func (h *Handler) List(c *gin.Context) {
 
 // Get godoc
 // @Summary 审计日志详情
-// @Description 获取单条审计日志的完整内容（含 details JSON）。仅管理员可访问。
+// @Description 获取单条审计日志的完整内容（含 details JSON）。需要 audit:read 权限。
 // @Tags 审计
 // @Security BearerAuth
 // @Produce json
@@ -76,10 +72,6 @@ func (h *Handler) List(c *gin.Context) {
 // @Failure 404 {object} types.Response
 // @Router /api/v1/audit/logs/{id} [get]
 func (h *Handler) Get(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
