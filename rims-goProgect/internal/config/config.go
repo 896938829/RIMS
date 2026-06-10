@@ -24,6 +24,9 @@ type Config struct {
 	DBSSLMode     string
 	DBAutoMigrate bool
 
+	// Migrations
+	MigrationsDir string
+
 	// JWT
 	JWTSecret      string
 	JWTExpireHours int
@@ -32,6 +35,12 @@ type Config struct {
 	UploadDir   string
 	MaxUploadMB int
 	AllowedExts string
+
+	// Maintenance cleanup
+	IdempotencyKeyTTLHours   int
+	FileDeletedRetentionDays int
+	AuditLogRetentionDays    int
+	CleanupBatchSize         int
 
 	// Logging
 	LogLevel  string
@@ -64,10 +73,15 @@ func Load() (Config, error) {
 	v.SetDefault("DB_NAME", "appdb")
 	v.SetDefault("DB_SSLMODE", "disable")
 	v.SetDefault("DB_AUTO_MIGRATE", true)
+	v.SetDefault("MIGRATIONS_DIR", "./migrations")
 	v.SetDefault("JWT_EXPIRE_HOURS", 24)
 	v.SetDefault("UPLOAD_DIR", "./uploads")
 	v.SetDefault("MAX_UPLOAD_MB", 10)
 	v.SetDefault("ALLOWED_EXTS", ".jpg,.jpeg,.png,.gif,.xlsx,.csv,.pdf")
+	v.SetDefault("IDEMPOTENCY_KEY_TTL_HOURS", 24)
+	v.SetDefault("FILE_DELETED_RETENTION_DAYS", 30)
+	v.SetDefault("AUDIT_LOG_RETENTION_DAYS", 0)
+	v.SetDefault("CLEANUP_BATCH_SIZE", 1000)
 	v.SetDefault("LOG_LEVEL", "info")
 	v.SetDefault("LOG_FORMAT", "text")
 	v.SetDefault("READ_TIMEOUT", 30)
@@ -75,25 +89,30 @@ func Load() (Config, error) {
 	v.SetDefault("CORS_ORIGINS", "*")
 
 	cfg := Config{
-		AppEnv:        v.GetString("APP_ENV"),
-		AppPort:       v.GetString("APP_PORT"),
-		DBHost:        v.GetString("DB_HOST"),
-		DBPort:        v.GetString("DB_PORT"),
-		DBUser:        v.GetString("DB_USER"),
-		DBPassword:    v.GetString("DB_PASSWORD"),
-		DBName:        v.GetString("DB_NAME"),
-		DBSSLMode:     v.GetString("DB_SSLMODE"),
-		DBAutoMigrate: v.GetBool("DB_AUTO_MIGRATE"),
-		JWTSecret:     v.GetString("JWT_SECRET"),
-		JWTExpireHours: v.GetInt("JWT_EXPIRE_HOURS"),
-		UploadDir:     v.GetString("UPLOAD_DIR"),
-		MaxUploadMB:   v.GetInt("MAX_UPLOAD_MB"),
-		AllowedExts:   v.GetString("ALLOWED_EXTS"),
-		LogLevel:      v.GetString("LOG_LEVEL"),
-		LogFormat:     v.GetString("LOG_FORMAT"),
-		ReadTimeout:   v.GetInt("READ_TIMEOUT"),
-		WriteTimeout:  v.GetInt("WRITE_TIMEOUT"),
-		CORSOrigins:   v.GetString("CORS_ORIGINS"),
+		AppEnv:                   v.GetString("APP_ENV"),
+		AppPort:                  v.GetString("APP_PORT"),
+		DBHost:                   v.GetString("DB_HOST"),
+		DBPort:                   v.GetString("DB_PORT"),
+		DBUser:                   v.GetString("DB_USER"),
+		DBPassword:               v.GetString("DB_PASSWORD"),
+		DBName:                   v.GetString("DB_NAME"),
+		DBSSLMode:                v.GetString("DB_SSLMODE"),
+		DBAutoMigrate:            v.GetBool("DB_AUTO_MIGRATE"),
+		MigrationsDir:            v.GetString("MIGRATIONS_DIR"),
+		JWTSecret:                v.GetString("JWT_SECRET"),
+		JWTExpireHours:           v.GetInt("JWT_EXPIRE_HOURS"),
+		UploadDir:                v.GetString("UPLOAD_DIR"),
+		MaxUploadMB:              v.GetInt("MAX_UPLOAD_MB"),
+		AllowedExts:              v.GetString("ALLOWED_EXTS"),
+		IdempotencyKeyTTLHours:   v.GetInt("IDEMPOTENCY_KEY_TTL_HOURS"),
+		FileDeletedRetentionDays: v.GetInt("FILE_DELETED_RETENTION_DAYS"),
+		AuditLogRetentionDays:    v.GetInt("AUDIT_LOG_RETENTION_DAYS"),
+		CleanupBatchSize:         v.GetInt("CLEANUP_BATCH_SIZE"),
+		LogLevel:                 v.GetString("LOG_LEVEL"),
+		LogFormat:                v.GetString("LOG_FORMAT"),
+		ReadTimeout:              v.GetInt("READ_TIMEOUT"),
+		WriteTimeout:             v.GetInt("WRITE_TIMEOUT"),
+		CORSOrigins:              v.GetString("CORS_ORIGINS"),
 	}
 
 	if cfg.DBPassword == "" {

@@ -1,4 +1,6 @@
-.env
 bin/
 dist/
 coverage.out
+uploads/
+**/__pycache__/
+*.pyc

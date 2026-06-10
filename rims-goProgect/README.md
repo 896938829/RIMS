@@ -323,6 +323,16 @@ cd rims-goProgect && go test ./...
 # 编译检查 / Build check
 cd rims-goProgect && go build ./...
 
+# 执行 SQL 迁移 / Apply SQL migrations
+# 迁移命令是显式运维入口；服务启动不会自动执行 migrations/*.sql。
+# The app does not run migrations/*.sql on startup.
+cd rims-goProgect && go run ./cmd/migrate up
+
+# 执行一次性维护清理 / Run one-shot maintenance cleanup
+# 默认清理过期幂等键和超过保留期的软删文件对象；审计日志默认不清理。
+# By default audit log cleanup is disabled.
+cd rims-goProgect && go run ./cmd/cleanup
+
 # 重新生成 Swagger 文档 / Regenerate Swagger docs
 # 全局注解 (@title/@BasePath/@securityDefinitions) 位于 internal/app/app.go,
 # 不在 cmd/server/main.go,因此 -g 必须指向前者。
@@ -341,16 +351,24 @@ cd rims-goProgect && swag init -g internal/app/app.go --parseDependency --parseI
 | `DB_PASSWORD` | 数据库密码 (必填) / DB password (required) | - |
 | `JWT_SECRET` | JWT 密钥 (必填) / JWT secret (required) | - |
 | `APP_PORT` | 服务端口 / Server port | 8080 |
-| `DB_AUTO_MIGRATE` | 自动迁移 / Auto migrate | true |
+| `DB_AUTO_MIGRATE` | GORM AutoMigrate 便利开关；不执行 SQL 迁移文件 / GORM AutoMigrate only; does not run SQL migration files | true |
+| `MIGRATIONS_DIR` | SQL 迁移目录 / SQL migration directory | ./migrations |
+| `IDEMPOTENCY_KEY_TTL_HOURS` | 幂等键 TTL / Idempotency key TTL | 24 |
+| `FILE_DELETED_RETENTION_DAYS` | 软删文件对象清理保留天数 / Retention for soft-deleted file objects | 30 |
+| `AUDIT_LOG_RETENTION_DAYS` | 审计日志清理保留天数；0 表示禁用 / Audit log cleanup retention; 0 disables cleanup | 0 |
+| `CLEANUP_BATCH_SIZE` | 清理批大小 / Cleanup batch size | 1000 |
 | `CORS_ORIGINS` | 允许的跨域源 / Allowed origins | * |
 | `LOG_LEVEL` | 日志级别 / Log level | info |
+
+Docker Compose 只启动 PostgreSQL；新环境需要手动执行 `go run ./cmd/migrate up` 以应用 raw SQL 迁移、索引和种子数据。`DB_AUTO_MIGRATE=true` 仅用于开发期 GORM 表结构便利同步，不能替代显式迁移。
+Docker Compose only starts PostgreSQL. Run `go run ./cmd/migrate up` manually in new environments to apply raw SQL migrations, indexes, and seed data.
 
 ## 后续增强 / Follow-up Enhancements
 
 ### 文件模块 / File Module
 - [ ] 接入对象存储 (MinIO/S3)，替换 `LocalStorage` 实现 / Integrate object storage (MinIO/S3) to replace `LocalStorage`
 - [ ] 受控资源下载时增加 `business_id` 关联对象的权限校验 (如单据附件按仓库范围校验) / Add per-resource permission check on download (e.g. scope document attachments by warehouse)
-- [ ] 软删对象文件的定时清理任务 / Scheduled cleanup job for soft-deleted object files
+- [ ] 为 `cmd/cleanup` 增加定时调度 (cron/Kubernetes Job) / Schedule `cmd/cleanup` via cron or Kubernetes Job
 - [ ] 文件 hash 去重：上传时命中已有 hash 则复用 `object_key` / File dedup by hash: reuse existing `object_key` on hash match
 
 ### 审计模块 / Audit Module
