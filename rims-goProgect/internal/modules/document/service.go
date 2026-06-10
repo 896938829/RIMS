@@ -374,20 +374,47 @@ func (s *DocumentService) SettleStocktake(ctx context.Context, userID, warehouse
 
 		now := time.Now()
 		for _, line := range lines {
-			if line.DiffQty == 0 {
+			if line.ProductID == 0 {
 				continue
 			}
 
-			inv, err := s.getOrCreateInventory(txCtx, doc.WarehouseID, line.ProductID, userID)
+			inv, err := s.getInventoryForUpdate(txCtx, doc.WarehouseID, line.ProductID)
 			if err != nil {
-				return err
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					if line.SystemQty != 0 {
+						return types.ErrInvalidState("库存已变化，请重新盘点后再结转")
+					}
+					if line.DiffQty == 0 {
+						continue
+					}
+					inv = &product.Inventory{
+						WarehouseID: doc.WarehouseID,
+						ProductID:   line.ProductID,
+						Quantity:    0,
+						Status:      1,
+					}
+					inv.CreatedBy = userID
+					inv.UpdatedBy = userID
+					if err := s.invRepo.Create(txCtx, inv); err != nil {
+						return types.ErrSystem(err)
+					}
+				} else {
+					return types.ErrSystem(err)
+				}
 			}
 
 			beforeQty := inv.Quantity
-			inv.Quantity += line.DiffQty // DiffQty can be negative (loss) or positive (gain)
-			if inv.Quantity < 0 {
-				inv.Quantity = 0
+			if beforeQty != line.SystemQty {
+				return types.ErrInvalidState("库存已变化，请重新盘点后再结转")
 			}
+			if line.DiffQty == 0 {
+				continue
+			}
+			afterQty := beforeQty + line.DiffQty // DiffQty can be negative (loss) or positive (gain)
+			if afterQty < 0 {
+				return types.ErrInvalidState("盘点差异会导致库存为负，请重新盘点后再结转")
+			}
+			inv.Quantity = afterQty
 			inv.UpdatedBy = userID
 			s.updateInventoryStatus(inv)
 

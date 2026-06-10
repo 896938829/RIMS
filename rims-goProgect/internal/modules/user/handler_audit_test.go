@@ -63,6 +63,18 @@ func (r *auditUserRepoStub) GetByUsername(ctx context.Context, username string) 
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (r *auditUserRepoStub) GetAuthUser(ctx context.Context, userID uint) (uint, string, uint, string, int8, error) {
+	u, err := r.GetByID(ctx, userID)
+	if err != nil {
+		return 0, "", 0, "", 0, err
+	}
+	roleCode := ""
+	if u.Role != nil {
+		roleCode = u.Role.Code
+	}
+	return u.ID, u.Username, u.RoleID, roleCode, u.Status, nil
+}
+
 func (r *auditUserRepoStub) List(ctx context.Context, page types.PageRequest) ([]User, int64, error) {
 	return nil, 0, nil
 }

@@ -110,6 +110,9 @@ func (s *UserService) Create(ctx context.Context, req CreateUserRequest) (*UserR
 	}
 
 	if err := s.userRepo.Create(ctx, u); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, types.ErrDuplicate("用户名已存在")
+		}
 		return nil, types.ErrSystem(err)
 	}
 
@@ -304,6 +307,30 @@ func (s *RoleService) List(ctx context.Context) ([]RoleResponse, error) {
 		result[i] = ToRoleResponse(&roles[i])
 	}
 	return result, nil
+}
+
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	needles := []string{
+		"23505",
+		"duplicate key",
+		"duplicate entry",
+		"duplicated key",
+		"unique constraint",
+		"unique violation",
+	}
+	for _, needle := range needles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // Update modifies an existing role.

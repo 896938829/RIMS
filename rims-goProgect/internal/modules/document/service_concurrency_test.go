@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -401,7 +402,7 @@ func TestDocumentServiceAuditsSettleStocktakeInsideTransaction(t *testing.T) {
 	}
 	docRepo := &docRepoConcurrencyStub{document: doc}
 	lineRepo := &documentLineRepoStub{
-		lines: []DocumentLine{{ProductID: 55, DiffQty: 3}},
+		lines: []DocumentLine{{ProductID: 55, SystemQty: 4, DiffQty: 3}},
 	}
 	invRepo := &inventoryRepoConcurrencyStub{
 		inventory: &product.Inventory{WarehouseID: 12, ProductID: 55, Quantity: 4, Status: 1},
@@ -434,6 +435,249 @@ func TestDocumentServiceAuditsSettleStocktakeInsideTransaction(t *testing.T) {
 	if got.Before["docType"] != DocTypeStocktake || got.After["warehouseID"] != uint(12) {
 		t.Fatalf("settle audit details before/after = %#v/%#v, want docType/warehouseID", got.Before, got.After)
 	}
+}
+
+func TestSettleStocktakeRejectsWhenCurrentInventoryDiffersFromSystemQty(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 902}},
+		DocNo:          "PD20260610003",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 902, ProductID: 55, SystemQty: 10, ActualQty: 8, DiffQty: -2}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	inv := &product.Inventory{WarehouseID: 12, ProductID: 55, Quantity: 8, Status: 1}
+	invRepo := &inventoryRepoConcurrencyStub{inventory: inv}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  txnRepo,
+		invRepo:  invRepo,
+		txRunner: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:    auditLoggerStub{},
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 902)
+
+	appErr := assertAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if !strings.Contains(appErr.Message, "库存") {
+		t.Fatalf("SettleStocktake() error message = %q, want stock-change message", appErr.Message)
+	}
+	if inv.Quantity != 8 {
+		t.Fatalf("inventory quantity = %d, want unchanged 8", inv.Quantity)
+	}
+	if containsString(invRepo.calls, "update") {
+		t.Fatalf("inventory update was called on stale stocktake snapshot, calls %v", invRepo.calls)
+	}
+	if len(txnRepo.created) != 0 {
+		t.Fatalf("created %d transactions, want none", len(txnRepo.created))
+	}
+	if containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was called on stale stocktake snapshot, calls %v", docRepo.calls)
+	}
+	if doc.Status != StatusStConfirmed {
+		t.Fatalf("document status = %d, want still confirmed", doc.Status)
+	}
+}
+
+func TestSettleStocktakeRejectsStaleZeroDiffLine(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 904}},
+		DocNo:          "PD20260610005",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 904, ProductID: 55, SystemQty: 10, ActualQty: 10, DiffQty: 0}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	inv := &product.Inventory{WarehouseID: 12, ProductID: 55, Quantity: 8, Status: 1}
+	invRepo := &inventoryRepoConcurrencyStub{inventory: inv}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  txnRepo,
+		invRepo:  invRepo,
+		txRunner: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:    auditLoggerStub{},
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 904)
+
+	assertAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if inv.Quantity != 8 {
+		t.Fatalf("inventory quantity = %d, want unchanged 8", inv.Quantity)
+	}
+	if containsString(invRepo.calls, "update") {
+		t.Fatalf("inventory update was called on stale zero-diff line, calls %v", invRepo.calls)
+	}
+	if len(txnRepo.created) != 0 {
+		t.Fatalf("created %d transactions, want none", len(txnRepo.created))
+	}
+	if containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was called on stale zero-diff line, calls %v", docRepo.calls)
+	}
+	if doc.Status != StatusStConfirmed {
+		t.Fatalf("document status = %d, want still confirmed", doc.Status)
+	}
+}
+
+func TestSettleStocktakeZeroDiffMissingInventoryDoesNotCreateInventory(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 905}},
+		DocNo:          "PD20260610006",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 905, ProductID: 55, SystemQty: 0, ActualQty: 0, DiffQty: 0}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	invRepo := &inventoryRepoConcurrencyStub{}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  txnRepo,
+		invRepo:  invRepo,
+		txRunner: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:    auditLoggerStub{},
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 905)
+
+	if err != nil {
+		t.Fatalf("SettleStocktake() error = %v, want nil", err)
+	}
+	if containsString(invRepo.calls, "create") {
+		t.Fatalf("inventory create was called for zero-diff missing inventory, calls %v", invRepo.calls)
+	}
+	if containsString(invRepo.calls, "update") {
+		t.Fatalf("inventory update was called for zero-diff missing inventory, calls %v", invRepo.calls)
+	}
+	if len(txnRepo.created) != 0 {
+		t.Fatalf("created %d transactions, want none", len(txnRepo.created))
+	}
+	if !containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was not called, calls %v", docRepo.calls)
+	}
+	if doc.Status != StatusStSettled {
+		t.Fatalf("document status = %d, want settled", doc.Status)
+	}
+}
+
+func TestSettleStocktakePositiveDiffMissingInventoryCreatesInventory(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 906}},
+		DocNo:          "PD20260610007",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 906, ProductID: 55, SystemQty: 0, ActualQty: 5, DiffQty: 5}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	invRepo := &inventoryRepoConcurrencyStub{}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  txnRepo,
+		invRepo:  invRepo,
+		txRunner: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:    auditLoggerStub{},
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 906)
+
+	if err != nil {
+		t.Fatalf("SettleStocktake() error = %v, want nil", err)
+	}
+	if !containsString(invRepo.calls, "create") {
+		t.Fatalf("inventory create was not called for positive stocktake gain, calls %v", invRepo.calls)
+	}
+	if invRepo.inventory == nil || invRepo.inventory.Quantity != 5 {
+		t.Fatalf("inventory = %#v, want quantity 5", invRepo.inventory)
+	}
+	if len(txnRepo.created) != 1 {
+		t.Fatalf("created %d transactions, want one", len(txnRepo.created))
+	}
+	if txnRepo.created[0].BeforeQty != 0 || txnRepo.created[0].AfterQty != 5 || txnRepo.created[0].Quantity != 5 {
+		t.Fatalf("transaction = %#v, want 0 -> 5 quantity 5", txnRepo.created[0])
+	}
+}
+
+func TestSettleStocktakeRejectsWhenDiffWouldMakeInventoryNegative(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 903}},
+		DocNo:          "PD20260610004",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 903, ProductID: 55, SystemQty: 2, ActualQty: -3, DiffQty: -5}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	inv := &product.Inventory{WarehouseID: 12, ProductID: 55, Quantity: 2, Status: 1}
+	invRepo := &inventoryRepoConcurrencyStub{inventory: inv}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  txnRepo,
+		invRepo:  invRepo,
+		txRunner: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:    auditLoggerStub{},
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 903)
+
+	assertAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if inv.Quantity != 2 {
+		t.Fatalf("inventory quantity = %d, want unchanged 2", inv.Quantity)
+	}
+	if containsString(invRepo.calls, "update") {
+		t.Fatalf("inventory update was called for negative stocktake result, calls %v", invRepo.calls)
+	}
+	if len(txnRepo.created) != 0 {
+		t.Fatalf("created %d transactions, want none", len(txnRepo.created))
+	}
+	if containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was called for negative stocktake result, calls %v", docRepo.calls)
+	}
+	if doc.Status != StatusStConfirmed {
+		t.Fatalf("document status = %d, want still confirmed", doc.Status)
+	}
+}
+
+func assertAppErrorCode(t *testing.T, err error, wantCode int) *types.AppError {
+	t.Helper()
+	var appErr *types.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("error = %v, want AppError code %d", err, wantCode)
+	}
+	if appErr.Code != wantCode {
+		t.Fatalf("error code = %d, want %d (error %v)", appErr.Code, wantCode, err)
+	}
+	return appErr
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertDocumentAuditEntry(t *testing.T, got audit.Entry, action string, resourceID uint, docNo string, userID, warehouseID uint) {

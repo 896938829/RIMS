@@ -17,6 +17,7 @@ type UserRepository interface {
 	Create(ctx context.Context, user *User) error
 	GetByID(ctx context.Context, id uint) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
+	GetAuthUser(ctx context.Context, userID uint) (uint, string, uint, string, int8, error)
 	List(ctx context.Context, page types.PageRequest) ([]User, int64, error)
 	Update(ctx context.Context, user *User) error
 	Delete(ctx context.Context, id uint) error
@@ -55,6 +56,26 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (*User, e
 		return nil, err
 	}
 	return &u, nil
+}
+
+func (r *userRepo) GetAuthUser(ctx context.Context, userID uint) (uint, string, uint, string, int8, error) {
+	var row struct {
+		ID       uint
+		Username string
+		RoleID   uint
+		RoleCode string
+		Status   int8
+	}
+	err := r.getDB(ctx).
+		Table("users AS u").
+		Select("u.id, u.username, u.role_id, r.code AS role_code, u.status").
+		Joins("JOIN roles AS r ON r.id = u.role_id AND r.deleted_at IS NULL").
+		Where("u.id = ? AND u.deleted_at IS NULL", userID).
+		Take(&row).Error
+	if err != nil {
+		return 0, "", 0, "", 0, err
+	}
+	return row.ID, row.Username, row.RoleID, row.RoleCode, row.Status, nil
 }
 
 func (r *userRepo) List(ctx context.Context, page types.PageRequest) ([]User, int64, error) {
@@ -178,6 +199,7 @@ func (r *roleRepo) HasPermission(ctx context.Context, roleID uint, code string) 
 	var count int64
 	err := r.getDB(ctx).
 		Table("role_permissions AS rp").
+		Joins("JOIN roles AS r ON r.id = rp.role_id AND r.deleted_at IS NULL").
 		Joins("JOIN permissions AS p ON p.id = rp.permission_id AND p.deleted_at IS NULL").
 		Where("rp.role_id = ? AND p.code = ?", roleID, code).
 		Count(&count).Error

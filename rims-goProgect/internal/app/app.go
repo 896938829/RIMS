@@ -4,8 +4,13 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"rims-go/internal/config"
@@ -68,5 +73,38 @@ func Run() error {
 		WriteTimeout: time.Duration(cfg.WriteTimeout) * time.Second,
 	}
 
-	return server.ListenAndServe()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	return serveWithGracefulShutdown(server, server.ListenAndServe, signals, 10*time.Second)
+}
+
+func serveWithGracefulShutdown(server *http.Server, serve func() error, signals <-chan os.Signal, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serve()
+	}()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-signals:
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		return err
+	}
+
+	err := <-errCh
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }

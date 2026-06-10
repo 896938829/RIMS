@@ -6,6 +6,7 @@ package audit
 import (
 	"encoding/json"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -134,10 +135,15 @@ func ToAuditLogResponse(l *AuditLog) AuditLogResponse {
 // Audit rows are bounded by column size; oversize user-agent / error strings
 // get cut here rather than at the DB driver.
 func truncate(s string, n int) string {
-	if n <= 0 || len(s) <= n {
+	if n <= 0 {
 		return s
 	}
-	// Fast byte-level cut is safe here because we over-approximate and the
-	// downstream column (VARCHAR(255)) tolerates any valid prefix.
-	return s[:n]
+	runes := []rune(s)
+	if len(runes) <= n {
+		if utf8.ValidString(s) {
+			return s
+		}
+		return string(runes)
+	}
+	return string(runes[:n])
 }

@@ -36,10 +36,6 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	r.Use(middleware.Logger())
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
-	// Services
-	tokenSvc := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpireHours)
-	authMw := middleware.JWTAuth(tokenSvc)
-
 	// Audit module — built first so it can be injected into downstream services
 	// and handlers that need atomic or best-effort audit writes.
 	auditRepo := audit.NewAuditRepository(gormDB)
@@ -49,6 +45,8 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	// Repositories
 	userRepo := user.NewUserRepository(gormDB)
 	roleRepo := user.NewRoleRepository(gormDB)
+	tokenSvc := auth.NewTokenService(cfg.JWTSecret, cfg.JWTExpireHours)
+	authMw := middleware.JWTAuth(tokenSvc, userRepo)
 	warehouseRepo := warehouse.NewWarehouseRepository(gormDB)
 	userWarehouseRepo := warehouse.NewUserWarehouseRepository(gormDB)
 	permMw := func(code string) gin.HandlerFunc {

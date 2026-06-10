@@ -456,6 +456,7 @@ func (s *ProductService) ConvertNonStd(ctx context.Context, userID, warehouseID,
 		}
 
 		// 3. Get or create inventory record
+		// Advisory lock serializes the missing-row get-or-create key; FOR UPDATE locks the existing row.
 		if err := s.inventoryRepo.LockItem(txCtx, warehouseID, req.ProductID); err != nil {
 			return types.ErrSystem(err)
 		}
