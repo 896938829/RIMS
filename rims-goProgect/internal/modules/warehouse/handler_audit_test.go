@@ -29,9 +29,24 @@ func (l *warehouseHandlerAuditLogger) Log(ctx context.Context, e audit.Entry) er
 
 type auditWarehouseRepoStub struct {
 	warehouses map[uint]*Warehouse
+	next       uint
 }
 
-func (r *auditWarehouseRepoStub) Create(ctx context.Context, w *Warehouse) error { return nil }
+func (r *auditWarehouseRepoStub) Create(ctx context.Context, w *Warehouse) error {
+	if r.warehouses == nil {
+		r.warehouses = make(map[uint]*Warehouse)
+	}
+	if w.ID == 0 {
+		if r.next == 0 {
+			r.next = 100
+		}
+		w.ID = r.next
+		r.next++
+	}
+	copy := *w
+	r.warehouses[w.ID] = &copy
+	return nil
+}
 func (r *auditWarehouseRepoStub) GetByID(ctx context.Context, id uint) (*Warehouse, error) {
 	w, ok := r.warehouses[id]
 	if !ok {
@@ -49,8 +64,15 @@ func (r *auditWarehouseRepoStub) List(ctx context.Context, page types.PageReques
 func (r *auditWarehouseRepoStub) ListByIDs(ctx context.Context, ids []uint) ([]Warehouse, int64, error) {
 	return nil, 0, nil
 }
-func (r *auditWarehouseRepoStub) Update(ctx context.Context, w *Warehouse) error { return nil }
-func (r *auditWarehouseRepoStub) Delete(ctx context.Context, id uint) error      { return nil }
+func (r *auditWarehouseRepoStub) Update(ctx context.Context, w *Warehouse) error {
+	copy := *w
+	r.warehouses[w.ID] = &copy
+	return nil
+}
+func (r *auditWarehouseRepoStub) Delete(ctx context.Context, id uint) error {
+	delete(r.warehouses, id)
+	return nil
+}
 
 type auditUserWarehouseRepoStub struct {
 	bindings map[uint]map[uint]*UserWarehouse
@@ -147,6 +169,34 @@ func TestWarehouseHandlerAuditsBindUnbindAndSetDefault(t *testing.T) {
 	assertWarehouseAuditEntry(t, logger.entries[0], audit.ActionBind, audit.ResourceUserWarehouse, 10)
 	assertWarehouseAuditEntry(t, logger.entries[1], audit.ActionUnbind, audit.ResourceUserWarehouse, 10)
 	assertWarehouseAuditEntry(t, logger.entries[2], audit.ActionUpdate, audit.ResourceUserWarehouse, 10)
+}
+
+func TestWarehouseHandlerAuditsCRUD(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	warehouseRepo := &auditWarehouseRepoStub{warehouses: map[uint]*Warehouse{}, next: 12}
+	uwRepo := &auditUserWarehouseRepoStub{bindings: map[uint]map[uint]*UserWarehouse{}}
+	logger := &warehouseHandlerAuditLogger{}
+	handler := NewHandler(NewWarehouseService(warehouseRepo, uwRepo, passThroughWarehouseTx), logger)
+
+	runWarehouseAuditRequest(t, handler.CreateWarehouse, http.MethodPost, "/warehouses", nil, `{"code":"WH12","name":"North Store","status":1}`)
+	runWarehouseAuditRequest(t, handler.UpdateWarehouse, http.MethodPut, "/warehouses/12", []gin.Param{{Key: "id", Value: "12"}}, `{"name":"North Store Updated","status":1}`)
+	runWarehouseAuditRequest(t, handler.DeleteWarehouse, http.MethodDelete, "/warehouses/12", []gin.Param{{Key: "id", Value: "12"}}, "")
+
+	if len(logger.entries) != 3 {
+		t.Fatalf("audit entries = %d, want 3", len(logger.entries))
+	}
+	assertWarehouseAuditEntry(t, logger.entries[0], audit.ActionCreate, audit.ResourceWarehouse, 12)
+	if logger.entries[0].After["code"] != "WH12" || logger.entries[0].After["status"] != int8(1) {
+		t.Fatalf("create details = %#v, want code/status", logger.entries[0].After)
+	}
+	assertWarehouseAuditEntry(t, logger.entries[1], audit.ActionUpdate, audit.ResourceWarehouse, 12)
+	if logger.entries[1].After["name"] != "North Store Updated" || logger.entries[1].After["status"] != int8(1) {
+		t.Fatalf("update details = %#v, want name/status", logger.entries[1].After)
+	}
+	assertWarehouseAuditEntry(t, logger.entries[2], audit.ActionDelete, audit.ResourceWarehouse, 12)
+	if logger.entries[2].After["warehouseID"] != uint(12) {
+		t.Fatalf("delete details = %#v, want warehouseID 12", logger.entries[2].After)
+	}
 }
 
 func passThroughWarehouseTx(ctx context.Context, fn func(context.Context) error) error {

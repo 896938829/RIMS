@@ -5,6 +5,7 @@ package document
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -20,6 +21,8 @@ import (
 type docRepoConcurrencyStub struct {
 	calls               []string
 	document            *Document
+	created             []*Document
+	next                uint
 	maxDocNo            string
 	lockPrefix          string
 	lockDateStr         string
@@ -30,6 +33,17 @@ type docRepoConcurrencyStub struct {
 }
 
 func (r *docRepoConcurrencyStub) Create(ctx context.Context, doc *Document) error {
+	r.calls = append(r.calls, "create-doc")
+	if doc.ID == 0 {
+		if r.next == 0 {
+			r.next = 100
+		}
+		doc.ID = r.next
+		r.next++
+	}
+	copy := *doc
+	r.created = append(r.created, &copy)
+	r.document = &copy
 	return nil
 }
 
@@ -205,11 +219,13 @@ func (r *inventoryTransactionRepoStub) ListByDocument(ctx context.Context, docID
 
 type documentLineRepoStub struct {
 	lines       []DocumentLine
+	created     []DocumentLine
 	calls       *[]string
 	returnedQty int
 }
 
 func (r *documentLineRepoStub) CreateBatch(ctx context.Context, lines []DocumentLine) error {
+	r.created = append(r.created, lines...)
 	return nil
 }
 
@@ -228,6 +244,212 @@ type auditLoggerStub struct{}
 
 func (auditLoggerStub) Log(ctx context.Context, e audit.Entry) error {
 	return nil
+}
+
+type documentAuditTxKey struct{}
+
+type documentAuditTxRunner struct {
+	calls      int
+	committed  bool
+	rolledBack bool
+}
+
+func (r *documentAuditTxRunner) run(ctx context.Context, fn func(context.Context) error) error {
+	r.calls++
+	err := fn(context.WithValue(ctx, documentAuditTxKey{}, true))
+	if err != nil {
+		r.rolledBack = true
+		return err
+	}
+	r.committed = true
+	return nil
+}
+
+type recordingDocumentAuditLogger struct {
+	entries []audit.Entry
+	txSeen  []bool
+	err     error
+}
+
+func (l *recordingDocumentAuditLogger) Log(ctx context.Context, e audit.Entry) error {
+	l.entries = append(l.entries, e)
+	l.txSeen = append(l.txSeen, ctx.Value(documentAuditTxKey{}) == true)
+	return l.err
+}
+
+type documentProductRepoStub struct {
+	products map[uint]*product.Product
+}
+
+func (r *documentProductRepoStub) Create(ctx context.Context, p *product.Product) error { return nil }
+func (r *documentProductRepoStub) GetByID(ctx context.Context, id uint) (*product.Product, error) {
+	p, ok := r.products[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	copy := *p
+	return &copy, nil
+}
+func (r *documentProductRepoStub) GetByCode(ctx context.Context, code string) (*product.Product, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+func (r *documentProductRepoStub) GetByBarcode(ctx context.Context, barcode string) (*product.Product, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+func (r *documentProductRepoStub) List(ctx context.Context, page types.PageRequest) ([]product.Product, int64, error) {
+	return nil, 0, nil
+}
+func (r *documentProductRepoStub) Update(ctx context.Context, p *product.Product) error { return nil }
+func (r *documentProductRepoStub) Delete(ctx context.Context, id uint) error            { return nil }
+
+func TestDocumentServiceAuditsCreateInsideTransaction(t *testing.T) {
+	auditErr := errors.New("audit insert failed")
+	txRunner := &documentAuditTxRunner{}
+	logger := &recordingDocumentAuditLogger{err: auditErr}
+	docRepo := &docRepoConcurrencyStub{next: 700}
+	lineRepo := &documentLineRepoStub{}
+	productRepo := &documentProductRepoStub{products: map[uint]*product.Product{
+		55: {Code: "P55", Name: "Product 55", Unit: "pcs", CostPrice: 3, RetailPrice: 5},
+	}}
+	productRepo.products[55].ID = 55
+	service := &DocumentService{
+		docRepo:     docRepo,
+		lineRepo:    lineRepo,
+		invRepo:     &inventoryRepoConcurrencyStub{},
+		productRepo: productRepo,
+		txRunner:    txRunner.run,
+		audit:       logger,
+	}
+
+	resp, err := service.Create(context.Background(), 77, 12, CreateDocumentRequest{
+		DocType: DocTypeSales,
+		Lines: []CreateDocumentLineRequest{
+			{ProductID: 55, Quantity: 2},
+		},
+	})
+
+	if !errors.Is(err, auditErr) {
+		t.Fatalf("Create() error = %v, want audit error", err)
+	}
+	if resp != nil {
+		t.Fatalf("Create() response = %#v, want nil on audit rollback", resp)
+	}
+	if !txRunner.rolledBack || txRunner.committed {
+		t.Fatalf("tx committed=%v rolledBack=%v, want rollback only", txRunner.committed, txRunner.rolledBack)
+	}
+	if len(logger.entries) != 1 || !logger.txSeen[0] {
+		t.Fatalf("audit entries/txSeen = %d/%v, want one in tx", len(logger.entries), logger.txSeen)
+	}
+	got := logger.entries[0]
+	assertDocumentAuditEntry(t, got, audit.ActionCreate, 700, docRepo.created[0].DocNo, 77, 12)
+	if got.Before["status"] != int8(0) || got.After["status"] != StatusDraft {
+		t.Fatalf("create status snapshot before/after = %#v/%#v, want 0/draft", got.Before, got.After)
+	}
+	if got.After["docType"] != DocTypeSales || got.After["warehouseID"] != uint(12) {
+		t.Fatalf("create audit details = %#v, want docType/warehouseID", got.After)
+	}
+}
+
+func TestDocumentServiceAuditsConfirmStocktake(t *testing.T) {
+	txRunner := &documentAuditTxRunner{}
+	logger := &recordingDocumentAuditLogger{}
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 801}},
+		DocNo:          "PD20260610001",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStRecording,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		txRunner: txRunner.run,
+		audit:    logger,
+	}
+
+	err := service.ConfirmStocktake(context.Background(), 77, 12, 801)
+
+	if err != nil {
+		t.Fatalf("ConfirmStocktake() error = %v", err)
+	}
+	if !txRunner.committed || txRunner.rolledBack {
+		t.Fatalf("tx committed=%v rolledBack=%v, want commit", txRunner.committed, txRunner.rolledBack)
+	}
+	if len(logger.entries) != 1 || !logger.txSeen[0] {
+		t.Fatalf("audit entries/txSeen = %d/%v, want one in tx", len(logger.entries), logger.txSeen)
+	}
+	got := logger.entries[0]
+	assertDocumentAuditEntry(t, got, audit.ActionConfirm, 801, "PD20260610001", 77, 12)
+	if got.Before["status"] != StatusStRecording || got.After["status"] != StatusStConfirmed {
+		t.Fatalf("confirm status snapshot before/after = %#v/%#v, want recording/confirmed", got.Before, got.After)
+	}
+	if got.After["docType"] != DocTypeStocktake || got.After["warehouseID"] != uint(12) {
+		t.Fatalf("confirm audit details = %#v, want docType/warehouseID", got.After)
+	}
+}
+
+func TestDocumentServiceAuditsSettleStocktakeInsideTransaction(t *testing.T) {
+	auditErr := errors.New("audit insert failed")
+	txRunner := &documentAuditTxRunner{}
+	logger := &recordingDocumentAuditLogger{err: auditErr}
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 901}},
+		DocNo:          "PD20260610002",
+		DocType:        DocTypeStocktake,
+		Status:         StatusStConfirmed,
+		WarehouseID:    12,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{ProductID: 55, DiffQty: 3}},
+	}
+	invRepo := &inventoryRepoConcurrencyStub{
+		inventory: &product.Inventory{WarehouseID: 12, ProductID: 55, Quantity: 4, Status: 1},
+	}
+	service := &DocumentService{
+		docRepo:  docRepo,
+		lineRepo: lineRepo,
+		txnRepo:  &inventoryTransactionRepoStub{},
+		invRepo:  invRepo,
+		txRunner: txRunner.run,
+		audit:    logger,
+	}
+
+	err := service.SettleStocktake(context.Background(), 77, 12, 901)
+
+	if !errors.Is(err, auditErr) {
+		t.Fatalf("SettleStocktake() error = %v, want audit error", err)
+	}
+	if !txRunner.rolledBack || txRunner.committed {
+		t.Fatalf("tx committed=%v rolledBack=%v, want rollback only", txRunner.committed, txRunner.rolledBack)
+	}
+	if len(logger.entries) != 1 || !logger.txSeen[0] {
+		t.Fatalf("audit entries/txSeen = %d/%v, want one in tx", len(logger.entries), logger.txSeen)
+	}
+	got := logger.entries[0]
+	assertDocumentAuditEntry(t, got, audit.ActionSettle, 901, "PD20260610002", 77, 12)
+	if got.Before["status"] != StatusStConfirmed || got.After["status"] != StatusStSettled {
+		t.Fatalf("settle status snapshot before/after = %#v/%#v, want confirmed/settled", got.Before, got.After)
+	}
+	if got.Before["docType"] != DocTypeStocktake || got.After["warehouseID"] != uint(12) {
+		t.Fatalf("settle audit details before/after = %#v/%#v, want docType/warehouseID", got.Before, got.After)
+	}
+}
+
+func assertDocumentAuditEntry(t *testing.T, got audit.Entry, action string, resourceID uint, docNo string, userID, warehouseID uint) {
+	t.Helper()
+	if got.Action != action || got.Resource != audit.ResourceDocument {
+		t.Fatalf("entry action/resource = %q/%q, want %q/%q", got.Action, got.Resource, action, audit.ResourceDocument)
+	}
+	if got.ResourceID == nil || *got.ResourceID != resourceID {
+		t.Fatalf("entry resourceID = %v, want %d", got.ResourceID, resourceID)
+	}
+	if got.DocNo != docNo {
+		t.Fatalf("entry docNo = %q, want %q", got.DocNo, docNo)
+	}
+	if got.Actor.UserID != userID || got.Actor.WarehouseID != warehouseID {
+		t.Fatalf("actor = %#v, want user %d warehouse %d", got.Actor, userID, warehouseID)
+	}
 }
 
 func TestGenerateDocNoLocksSequenceBeforeReadingMax(t *testing.T) {

@@ -116,10 +116,6 @@ func (h *Handler) auditLogin(c *gin.Context, username string, resp *LoginRespons
 // @Failure 400 {object} types.Response
 // @Router /api/v1/users [post]
 func (h *Handler) CreateUser(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -196,10 +192,6 @@ func (h *Handler) GetUser(c *gin.Context) {
 // @Success 200 {object} types.Response{data=UserResponse}
 // @Router /api/v1/users/{id} [put]
 func (h *Handler) UpdateUser(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -231,10 +223,6 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 // @Success 204
 // @Router /api/v1/users/{id} [delete]
 func (h *Handler) DeleteUser(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -268,6 +256,10 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceUser, userID, "修改密码", map[string]any{
+		"userID":          userID,
+		"passwordChanged": true,
+	})
 	types.OK(c, nil)
 }
 
@@ -282,10 +274,6 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 // @Success 200 {object} types.Response
 // @Router /api/v1/users/{id}/password [put]
 func (h *Handler) ResetPassword(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -299,6 +287,10 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceUser, id, "重置密码", map[string]any{
+		"targetUserID":  id,
+		"passwordReset": true,
+	})
 	types.OK(c, nil)
 }
 
@@ -331,10 +323,6 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 // @Success 201 {object} types.Response{data=RoleResponse}
 // @Router /api/v1/roles [post]
 func (h *Handler) CreateRole(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req CreateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -405,10 +393,6 @@ func (h *Handler) GetRole(c *gin.Context) {
 // @Success 200 {object} types.Response{data=RoleResponse}
 // @Router /api/v1/roles/{id} [put]
 func (h *Handler) UpdateRole(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -439,10 +423,6 @@ func (h *Handler) UpdateRole(c *gin.Context) {
 // @Success 204
 // @Router /api/v1/roles/{id} [delete]
 func (h *Handler) DeleteRole(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -467,10 +447,6 @@ func (h *Handler) DeleteRole(c *gin.Context) {
 // @Success 200 {object} types.Response
 // @Router /api/v1/roles/{id}/permissions [put]
 func (h *Handler) AssignPermissions(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return

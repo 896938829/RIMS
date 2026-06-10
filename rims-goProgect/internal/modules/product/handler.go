@@ -48,10 +48,6 @@ func NewHandler(productSvc *ProductService, auditSvc ...AuditLogger) *Handler {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/products [post]
 func (h *Handler) CreateProduct(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req CreateProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -62,6 +58,13 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceProduct, resp.ID, "创建商品", map[string]any{
+		"productID": resp.ID,
+		"type":      audit.ResourceProduct,
+		"code":      resp.Code,
+		"name":      resp.Name,
+		"status":    resp.Status,
+	})
 	types.OKCreated(c, resp)
 }
 
@@ -158,10 +161,6 @@ func (h *Handler) GetProductByBarcode(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/products/{id} [put]
 func (h *Handler) UpdateProduct(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -189,10 +188,6 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/products/{id} [delete]
 func (h *Handler) DeleteProduct(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -201,6 +196,10 @@ func (h *Handler) DeleteProduct(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceProduct, id, "删除商品", map[string]any{
+		"productID": id,
+		"type":      audit.ResourceProduct,
+	})
 	types.OKNoContent(c)
 }
 
@@ -269,10 +268,6 @@ func (h *Handler) GetInventory(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/inventory/{id} [put]
 func (h *Handler) UpdateInventory(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -332,10 +327,6 @@ func (h *Handler) ListAlerts(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/non-std-inventory [post]
 func (h *Handler) CreateNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req CreateNonStdInventoryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -347,6 +338,14 @@ func (h *Handler) CreateNonStd(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceNonStdInventory, resp.ID, "创建非标库存", map[string]any{
+		"nonStdInventoryID": resp.ID,
+		"type":              audit.ResourceNonStdInventory,
+		"warehouseID":       resp.WarehouseID,
+		"tempLabel":         resp.TempLabel,
+		"quantity":          resp.Quantity,
+		"status":            resp.Status,
+	})
 	types.OKCreated(c, resp)
 }
 
@@ -363,10 +362,6 @@ func (h *Handler) CreateNonStd(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/non-std-inventory [get]
 func (h *Handler) ListNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var page types.PageRequest
 	if err := c.ShouldBindQuery(&page); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -393,10 +388,6 @@ func (h *Handler) ListNonStd(c *gin.Context) {
 // @Failure 404 {object} types.Response
 // @Router /api/v1/non-std-inventory/{id} [get]
 func (h *Handler) GetNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -423,10 +414,6 @@ func (h *Handler) GetNonStd(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/non-std-inventory/{id} [put]
 func (h *Handler) UpdateNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -442,6 +429,13 @@ func (h *Handler) UpdateNonStd(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceNonStdInventory, id, "更新非标库存", map[string]any{
+		"nonStdInventoryID": resp.ID,
+		"type":              audit.ResourceNonStdInventory,
+		"warehouseID":       resp.WarehouseID,
+		"quantity":          resp.Quantity,
+		"status":            resp.Status,
+	})
 	types.OK(c, resp)
 }
 
@@ -455,10 +449,6 @@ func (h *Handler) UpdateNonStd(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/non-std-inventory/{id} [delete]
 func (h *Handler) DeleteNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -468,6 +458,11 @@ func (h *Handler) DeleteNonStd(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceNonStdInventory, id, "删除非标库存", map[string]any{
+		"nonStdInventoryID": id,
+		"type":              audit.ResourceNonStdInventory,
+		"warehouseID":       warehouseID,
+	})
 	types.OKNoContent(c)
 }
 
@@ -484,10 +479,6 @@ func (h *Handler) DeleteNonStd(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/non-std-inventory/{id}/convert [post]
 func (h *Handler) ConvertNonStd(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return

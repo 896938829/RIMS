@@ -118,6 +118,32 @@ func (s *DocumentService) Create(ctx context.Context, userID, warehouseID uint, 
 			return types.ErrSystem(err)
 		}
 
+		docID := doc.ID
+		if err := s.audit.Log(txCtx, audit.Entry{
+			Actor: audit.Actor{
+				UserID:      userID,
+				WarehouseID: warehouseID,
+			},
+			Action:      audit.ActionCreate,
+			Resource:    audit.ResourceDocument,
+			ResourceID:  &docID,
+			DocNo:       doc.DocNo,
+			Description: fmt.Sprintf("创建单据 %s", doc.DocNo),
+			Before: map[string]any{
+				"status":      int8(0),
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+			},
+			After: map[string]any{
+				"status":      doc.Status,
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+				"lineCount":   len(lines),
+			},
+		}); err != nil {
+			return err
+		}
+
 		r := ToDocumentResponse(doc)
 		resp = &r
 		return nil
@@ -271,29 +297,54 @@ func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, wareh
 
 // ConfirmStocktake transitions a stocktake document from recording to confirmed.
 func (s *DocumentService) ConfirmStocktake(ctx context.Context, userID, warehouseID, id uint) error {
-	doc, err := s.docRepo.GetByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
+		doc, err := s.docRepo.GetByIDForUpdate(txCtx, id)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return types.ErrNotFound("单据")
+			}
+			return types.ErrSystem(err)
+		}
+		if doc.WarehouseID != warehouseID {
 			return types.ErrNotFound("单据")
 		}
-		return types.ErrSystem(err)
-	}
-	if doc.WarehouseID != warehouseID {
-		return types.ErrNotFound("单据")
-	}
-	if doc.DocType != DocTypeStocktake {
-		return types.ErrValidation("非盘点单不支持此操作")
-	}
-	if doc.Status != StatusStRecording {
-		return types.ErrInvalidState("单据状态不允许确认")
-	}
+		if doc.DocType != DocTypeStocktake {
+			return types.ErrValidation("非盘点单不支持此操作")
+		}
+		if doc.Status != StatusStRecording {
+			return types.ErrInvalidState("单据状态不允许确认")
+		}
 
-	doc.Status = StatusStConfirmed
-	doc.UpdatedBy = userID
-	if err := s.docRepo.Update(ctx, doc); err != nil {
-		return types.ErrSystem(err)
-	}
-	return nil
+		beforeStatus := doc.Status
+		doc.Status = StatusStConfirmed
+		doc.UpdatedBy = userID
+		if err := s.docRepo.Update(txCtx, doc); err != nil {
+			return types.ErrSystem(err)
+		}
+
+		docID := doc.ID
+		return s.audit.Log(txCtx, audit.Entry{
+			Actor: audit.Actor{
+				UserID:      userID,
+				WarehouseID: warehouseID,
+			},
+			Action:      audit.ActionConfirm,
+			Resource:    audit.ResourceDocument,
+			ResourceID:  &docID,
+			DocNo:       doc.DocNo,
+			Description: fmt.Sprintf("确认盘点单 %s", doc.DocNo),
+			Before: map[string]any{
+				"status":      beforeStatus,
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+			},
+			After: map[string]any{
+				"status":      doc.Status,
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+			},
+		})
+	})
 }
 
 // SettleStocktake transitions a confirmed stocktake to settled and applies inventory diffs.
@@ -371,7 +422,35 @@ func (s *DocumentService) SettleStocktake(ctx context.Context, userID, warehouse
 		doc.Status = StatusStSettled
 		doc.OperatedAt = &now
 		doc.UpdatedBy = userID
-		return s.docRepo.Update(txCtx, doc)
+		beforeStatus := StatusStConfirmed
+		if err := s.docRepo.Update(txCtx, doc); err != nil {
+			return types.ErrSystem(err)
+		}
+
+		docID := doc.ID
+		return s.audit.Log(txCtx, audit.Entry{
+			Actor: audit.Actor{
+				UserID:      userID,
+				WarehouseID: warehouseID,
+			},
+			Action:      audit.ActionSettle,
+			Resource:    audit.ResourceDocument,
+			ResourceID:  &docID,
+			DocNo:       doc.DocNo,
+			Description: fmt.Sprintf("结转盘点单 %s", doc.DocNo),
+			Before: map[string]any{
+				"status":      beforeStatus,
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+				"lineCount":   len(lines),
+			},
+			After: map[string]any{
+				"status":      doc.Status,
+				"docType":     doc.DocType,
+				"warehouseID": doc.WarehouseID,
+				"operatedAt":  now,
+			},
+		})
 	})
 }
 

@@ -6,12 +6,14 @@ package user
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"rims-go/internal/modules/audit"
@@ -132,6 +134,9 @@ func (r *auditRoleRepoStub) AssignPermissions(ctx context.Context, roleID uint, 
 func (r *auditRoleRepoStub) ListPermissions(ctx context.Context) ([]Permission, error) {
 	return nil, nil
 }
+func (r *auditRoleRepoStub) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
+	return false, nil
+}
 
 func TestUserHandlerAuditsCreateUpdateDeleteAndAssignPermissions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -218,6 +223,59 @@ func TestUserHandlerIgnoresAuditLoggerErrorOnSuccessfulCreate(t *testing.T) {
 	}
 	if len(logger.entries) != 1 {
 		t.Fatalf("audit entries = %d, want 1", len(logger.entries))
+	}
+}
+
+func TestUserHandlerAuditsPasswordChangeAndReset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	role := &Role{Code: "staff", Name: "Staff"}
+	role.ID = 2
+	selfHash, err := bcrypt.GenerateFromPassword([]byte("old-secret"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash self password: %v", err)
+	}
+	targetHash, err := bcrypt.GenerateFromPassword([]byte("target-secret"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash target password: %v", err)
+	}
+	userRepo := &auditUserRepoStub{
+		users: map[uint]*User{
+			1: {Username: "admin", PasswordHash: string(selfHash), RoleID: 2, Status: 1, Role: role},
+			9: {Username: "target", PasswordHash: string(targetHash), RoleID: 2, Status: 1, Role: role},
+		},
+	}
+	userRepo.users[1].ID = 1
+	userRepo.users[9].ID = 9
+	roleRepo := &auditRoleRepoStub{roles: map[uint]*Role{2: role}}
+	logger := &userHandlerAuditLogger{}
+	handler := NewHandler(NewUserService(userRepo, roleRepo, nil), NewRoleService(roleRepo), logger)
+
+	runUserAuditRequest(t, handler.ChangePassword, http.MethodPut, "/users/me/password", "", "", `{"oldPassword":"old-secret","newPassword":"new-secret"}`)
+	runUserAuditRequest(t, handler.ResetPassword, http.MethodPut, "/users/9/password", "id", "9", `{"newPassword":"reset-secret"}`)
+
+	if len(logger.entries) != 2 {
+		t.Fatalf("audit entries = %d, want 2", len(logger.entries))
+	}
+	assertUserAuditEntry(t, logger.entries[0], audit.ActionUpdate, audit.ResourceUser, 1)
+	if logger.entries[0].After["passwordChanged"] != true || logger.entries[0].After["userID"] != uint(1) {
+		t.Fatalf("change password details = %#v, want passwordChanged/userID", logger.entries[0].After)
+	}
+	assertUserAuditEntry(t, logger.entries[1], audit.ActionUpdate, audit.ResourceUser, 9)
+	if logger.entries[1].After["passwordReset"] != true || logger.entries[1].After["targetUserID"] != uint(9) {
+		t.Fatalf("reset password details = %#v, want passwordReset/targetUserID", logger.entries[1].After)
+	}
+	for _, entry := range logger.entries {
+		for _, forbiddenKey := range []string{"oldPassword", "newPassword", "password"} {
+			if _, ok := entry.After[forbiddenKey]; ok {
+				t.Fatalf("audit details include sensitive key %q: %#v", forbiddenKey, entry.After)
+			}
+		}
+		details := fmt.Sprint(entry.After)
+		for _, secret := range []string{"old-secret", "new-secret", "reset-secret", "target-secret"} {
+			if strings.Contains(details, secret) {
+				t.Fatalf("audit details leaked password value %q: %s", secret, details)
+			}
+		}
 	}
 }
 

@@ -29,9 +29,24 @@ func (l *productHandlerAuditLogger) Log(ctx context.Context, e audit.Entry) erro
 
 type auditProductRepoStub struct {
 	products map[uint]*Product
+	next     uint
 }
 
-func (r *auditProductRepoStub) Create(ctx context.Context, p *Product) error { return nil }
+func (r *auditProductRepoStub) Create(ctx context.Context, p *Product) error {
+	if r.products == nil {
+		r.products = make(map[uint]*Product)
+	}
+	if p.ID == 0 {
+		if r.next == 0 {
+			r.next = 100
+		}
+		p.ID = r.next
+		r.next++
+	}
+	copy := *p
+	r.products[p.ID] = &copy
+	return nil
+}
 func (r *auditProductRepoStub) GetByID(ctx context.Context, id uint) (*Product, error) {
 	p, ok := r.products[id]
 	if !ok {
@@ -54,7 +69,10 @@ func (r *auditProductRepoStub) Update(ctx context.Context, p *Product) error {
 	r.products[p.ID] = &copy
 	return nil
 }
-func (r *auditProductRepoStub) Delete(ctx context.Context, id uint) error { return nil }
+func (r *auditProductRepoStub) Delete(ctx context.Context, id uint) error {
+	delete(r.products, id)
+	return nil
+}
 
 type auditInventoryRepoStub struct {
 	items map[uint]*Inventory
@@ -117,9 +135,24 @@ func (r *auditInventoryRepoStub) Delete(ctx context.Context, id uint) error { re
 
 type auditNonStdRepoStub struct {
 	items map[uint]*NonStdInventory
+	next  uint
 }
 
-func (r *auditNonStdRepoStub) Create(ctx context.Context, ns *NonStdInventory) error { return nil }
+func (r *auditNonStdRepoStub) Create(ctx context.Context, ns *NonStdInventory) error {
+	if r.items == nil {
+		r.items = make(map[uint]*NonStdInventory)
+	}
+	if ns.ID == 0 {
+		if r.next == 0 {
+			r.next = 200
+		}
+		ns.ID = r.next
+		r.next++
+	}
+	copy := *ns
+	r.items[ns.ID] = &copy
+	return nil
+}
 func (r *auditNonStdRepoStub) GetByID(ctx context.Context, id uint) (*NonStdInventory, error) {
 	ns, ok := r.items[id]
 	if !ok {
@@ -142,7 +175,63 @@ func (r *auditNonStdRepoStub) Update(ctx context.Context, ns *NonStdInventory) e
 	r.items[ns.ID] = &copy
 	return nil
 }
-func (r *auditNonStdRepoStub) Delete(ctx context.Context, id uint) error { return nil }
+func (r *auditNonStdRepoStub) Delete(ctx context.Context, id uint) error {
+	delete(r.items, id)
+	return nil
+}
+
+func TestProductHandlerAuditsCreateAndDelete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	productRepo := &auditProductRepoStub{products: map[uint]*Product{}, next: 15}
+	invRepo := &auditInventoryRepoStub{items: map[uint]*Inventory{}, byKey: map[uint]*Inventory{}}
+	nonStdRepo := &auditNonStdRepoStub{items: map[uint]*NonStdInventory{}}
+	logger := &productHandlerAuditLogger{}
+	handler := NewHandler(NewProductService(productRepo, invRepo, nonStdRepo, passThroughProductTx), logger)
+
+	runProductAuditRequest(t, handler.CreateProduct, http.MethodPost, "/products", nil, `{"code":"P15","name":"Created Product","unit":"pcs","status":1}`)
+	runProductAuditRequest(t, handler.DeleteProduct, http.MethodDelete, "/products/15", []gin.Param{{Key: "id", Value: "15"}}, "")
+
+	if len(logger.entries) != 2 {
+		t.Fatalf("audit entries = %d, want 2", len(logger.entries))
+	}
+	assertProductAuditEntry(t, logger.entries[0], audit.ActionCreate, audit.ResourceProduct, 15)
+	if logger.entries[0].After["code"] != "P15" || logger.entries[0].After["status"] != int8(1) {
+		t.Fatalf("create details = %#v, want code/status", logger.entries[0].After)
+	}
+	assertProductAuditEntry(t, logger.entries[1], audit.ActionDelete, audit.ResourceProduct, 15)
+	if logger.entries[1].After["productID"] != uint(15) {
+		t.Fatalf("delete details = %#v, want productID 15", logger.entries[1].After)
+	}
+}
+
+func TestProductHandlerAuditsNonStdCreateUpdateAndDelete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	productRepo := &auditProductRepoStub{products: map[uint]*Product{}}
+	invRepo := &auditInventoryRepoStub{items: map[uint]*Inventory{}, byKey: map[uint]*Inventory{}}
+	nonStdRepo := &auditNonStdRepoStub{items: map[uint]*NonStdInventory{}, next: 21}
+	logger := &productHandlerAuditLogger{}
+	handler := NewHandler(NewProductService(productRepo, invRepo, nonStdRepo, passThroughProductTx), logger)
+
+	runProductAuditRequest(t, handler.CreateNonStd, http.MethodPost, "/non-std-inventory", nil, `{"tempLabel":"TMP21","description":"raw material","unit":"kg","quantity":10,"sourceMethod":"manual"}`)
+	runProductAuditRequest(t, handler.UpdateNonStd, http.MethodPut, "/non-std-inventory/21", []gin.Param{{Key: "id", Value: "21"}}, `{"quantity":12,"status":1}`)
+	runProductAuditRequest(t, handler.DeleteNonStd, http.MethodDelete, "/non-std-inventory/21", []gin.Param{{Key: "id", Value: "21"}}, "")
+
+	if len(logger.entries) != 3 {
+		t.Fatalf("audit entries = %d, want 3", len(logger.entries))
+	}
+	assertProductAuditEntry(t, logger.entries[0], audit.ActionCreate, audit.ResourceNonStdInventory, 21)
+	if logger.entries[0].After["warehouseID"] != uint(3) || logger.entries[0].After["tempLabel"] != "TMP21" {
+		t.Fatalf("non-std create details = %#v, want warehouseID/tempLabel", logger.entries[0].After)
+	}
+	assertProductAuditEntry(t, logger.entries[1], audit.ActionUpdate, audit.ResourceNonStdInventory, 21)
+	if logger.entries[1].After["quantity"] != 12 || logger.entries[1].After["status"] != int8(1) {
+		t.Fatalf("non-std update details = %#v, want quantity/status", logger.entries[1].After)
+	}
+	assertProductAuditEntry(t, logger.entries[2], audit.ActionDelete, audit.ResourceNonStdInventory, 21)
+	if logger.entries[2].After["warehouseID"] != uint(3) || logger.entries[2].After["nonStdInventoryID"] != uint(21) {
+		t.Fatalf("non-std delete details = %#v, want warehouse/nonStdInventoryID", logger.entries[2].After)
+	}
+}
 
 func TestProductHandlerAuditsCostInventoryAndNonStdConversion(t *testing.T) {
 	gin.SetMode(gin.TestMode)

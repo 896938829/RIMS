@@ -117,6 +117,9 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	if !IsValidBusinessType(businessType) {
 		return nil, types.ErrValidation("不支持的业务类型")
 	}
+	if businessType == BusinessTypeProductImage && (req.BusinessID == nil || *req.BusinessID == 0) {
+		return nil, types.ErrValidation("product_image必须关联业务对象")
+	}
 
 	originalName := strings.TrimSpace(req.OriginalName)
 	if originalName == "" {

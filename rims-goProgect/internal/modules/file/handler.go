@@ -88,6 +88,7 @@ func (h *Handler) Upload(c *gin.Context) {
 		return
 	}
 	resp := ToFileResponse(record, types.IsAdmin(c))
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceFile, record.ID, "上传文件", fileUploadAuditDetails(record))
 	types.OKCreated(c, &resp)
 }
 
@@ -234,6 +235,22 @@ func (h *Handler) auditSuccess(c *gin.Context, action, resource string, resource
 		After:       after,
 		Result:      audit.ResultSuccess,
 	})
+}
+
+func fileUploadAuditDetails(record *FileAttachment) map[string]any {
+	details := map[string]any{
+		"fileID":       record.ID,
+		"type":         audit.ResourceFile,
+		"businessType": record.BusinessType,
+		"filename":     record.OriginalName,
+		"fileSize":     record.FileSize,
+		"mimeType":     record.MimeType,
+		"isPublic":     record.IsPublic,
+	}
+	if record.BusinessID != nil {
+		details["businessID"] = *record.BusinessID
+	}
+	return details
 }
 
 // sanitizeFilename strips characters that would break a Content-Disposition

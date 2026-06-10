@@ -48,10 +48,6 @@ func NewHandler(warehouseSvc *WarehouseService, auditSvc ...AuditLogger) *Handle
 // @Failure 403 {object} types.Response
 // @Router /api/v1/warehouses [post]
 func (h *Handler) CreateWarehouse(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	var req CreateWarehouseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
@@ -62,6 +58,14 @@ func (h *Handler) CreateWarehouse(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	id := resp.ID
+	h.auditSuccess(c, audit.ActionCreate, audit.ResourceWarehouse, &id, "创建仓库", map[string]any{
+		"warehouseID": resp.ID,
+		"type":        audit.ResourceWarehouse,
+		"code":        resp.Code,
+		"name":        resp.Name,
+		"status":      resp.Status,
+	})
 	types.OKCreated(c, resp)
 }
 
@@ -128,10 +132,6 @@ func (h *Handler) GetWarehouse(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/warehouses/{id} [put]
 func (h *Handler) UpdateWarehouse(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -146,6 +146,12 @@ func (h *Handler) UpdateWarehouse(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceWarehouse, &id, "更新仓库", map[string]any{
+		"warehouseID": resp.ID,
+		"type":        audit.ResourceWarehouse,
+		"name":        resp.Name,
+		"status":      resp.Status,
+	})
 	types.OK(c, resp)
 }
 
@@ -158,10 +164,6 @@ func (h *Handler) UpdateWarehouse(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/warehouses/{id} [delete]
 func (h *Handler) DeleteWarehouse(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -170,6 +172,10 @@ func (h *Handler) DeleteWarehouse(c *gin.Context) {
 		types.FailFromError(c, err)
 		return
 	}
+	h.auditSuccess(c, audit.ActionDelete, audit.ResourceWarehouse, &id, "删除仓库", map[string]any{
+		"warehouseID": id,
+		"type":        audit.ResourceWarehouse,
+	})
 	types.OKNoContent(c)
 }
 
@@ -187,10 +193,6 @@ func (h *Handler) DeleteWarehouse(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/warehouses/{id}/users [post]
 func (h *Handler) BindUsers(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	id, err := parseID(c, "id")
 	if err != nil {
 		return
@@ -221,10 +223,6 @@ func (h *Handler) BindUsers(c *gin.Context) {
 // @Failure 403 {object} types.Response
 // @Router /api/v1/warehouses/{id}/users/{userId} [delete]
 func (h *Handler) UnbindUser(c *gin.Context) {
-	if !types.IsAdmin(c) {
-		types.FailFromError(c, types.ErrForbidden())
-		return
-	}
 	warehouseID, err := parseID(c, "id")
 	if err != nil {
 		return

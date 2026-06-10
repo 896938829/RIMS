@@ -88,6 +88,15 @@ func (s *aclStorageStub) PublicURL(objectKey string) string {
 	return "/uploads/" + objectKey
 }
 
+type aclReadCountingReader struct {
+	reads int
+}
+
+func (r *aclReadCountingReader) Read(p []byte) (int, error) {
+	r.reads++
+	return 0, errors.New("reader should not be read")
+}
+
 type aclCheckerStub struct {
 	allowed     bool
 	allowedByID map[uint]bool
@@ -175,6 +184,120 @@ func TestFileServiceUploadWithBusinessIDDenySkipsStorageAndCreate(t *testing.T) 
 	}
 	if len(repo.created) != 0 {
 		t.Fatalf("repo creates = %d, want 0", len(repo.created))
+	}
+}
+
+func TestFileServiceUploadProductImageWithoutBusinessIDRejectsBeforeStorageAndCreate(t *testing.T) {
+	repo := &aclFileRepoStub{}
+	storage := &aclStorageStub{}
+	reader := &aclReadCountingReader{}
+	checker := &aclCheckerStub{err: errors.New("checker should not be called")}
+	svc := NewFileService(repo, storage, 0, ".jpg", "/files/%d/download", checker)
+
+	record, err := svc.Upload(context.Background(), FileActor{UserID: 20}, UploadRequest{
+		BusinessType: BusinessTypeProductImage,
+		BusinessID:   nil,
+		OriginalName: "product.jpg",
+		Reader:       reader,
+	})
+
+	if record != nil {
+		t.Errorf("Upload() record = %#v, want nil", record)
+	}
+	appErr, ok := err.(*types.AppError)
+	if !ok || appErr.Code != types.ErrCodeValidation {
+		t.Errorf("Upload() error = %v, want validation error", err)
+	}
+	if storage.saved != 0 {
+		t.Errorf("storage saves = %d, want 0", storage.saved)
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("repo creates = %d, want 0", len(repo.created))
+	}
+	if checker.calls != 0 {
+		t.Errorf("checker calls = %d, want 0", checker.calls)
+	}
+	if reader.reads != 0 {
+		t.Errorf("reader reads = %d, want 0", reader.reads)
+	}
+}
+
+func TestFileServiceUploadProductImageWithZeroBusinessIDRejectsBeforeReadStorageAndCreate(t *testing.T) {
+	businessID := uint(0)
+	repo := &aclFileRepoStub{}
+	storage := &aclStorageStub{}
+	reader := &aclReadCountingReader{}
+	checker := &aclCheckerStub{allowed: true}
+	svc := NewFileService(repo, storage, 0, ".jpg", "/files/%d/download", checker)
+
+	record, err := svc.Upload(context.Background(), FileActor{UserID: 20}, UploadRequest{
+		BusinessType: BusinessTypeProductImage,
+		BusinessID:   &businessID,
+		OriginalName: "product.jpg",
+		Reader:       reader,
+	})
+
+	if record != nil {
+		t.Errorf("Upload() record = %#v, want nil", record)
+	}
+	appErr, ok := err.(*types.AppError)
+	if !ok || appErr.Code != types.ErrCodeValidation {
+		t.Errorf("Upload() error = %v, want validation error", err)
+	}
+	if storage.saved != 0 {
+		t.Errorf("storage saves = %d, want 0", storage.saved)
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("repo creates = %d, want 0", len(repo.created))
+	}
+	if checker.calls != 0 {
+		t.Errorf("checker calls = %d, want 0", checker.calls)
+	}
+	if reader.reads != 0 {
+		t.Errorf("reader reads = %d, want 0", reader.reads)
+	}
+}
+
+func TestFileServiceUploadProductImageWithBusinessIDAuthorizesAndReturnsPublicURL(t *testing.T) {
+	businessID := uint(99)
+	repo := &aclFileRepoStub{}
+	storage := &aclStorageStub{}
+	checker := &aclCheckerStub{allowed: true}
+	svc := NewFileService(repo, storage, 0, ".jpg", "/files/%d/download", checker)
+
+	record, err := svc.Upload(context.Background(), FileActor{UserID: 20}, UploadRequest{
+		BusinessType: BusinessTypeProductImage,
+		BusinessID:   &businessID,
+		OriginalName: "product.jpg",
+		Reader:       strings.NewReader("file body"),
+	})
+
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	if record == nil {
+		t.Fatal("Upload() record = nil, want file attachment")
+	}
+	if checker.calls != 1 || checker.action != FileActionCreate {
+		t.Fatalf("checker calls/action = %d/%q, want 1/%q", checker.calls, checker.action, FileActionCreate)
+	}
+	if checker.file.BusinessID == nil || *checker.file.BusinessID != businessID {
+		t.Fatalf("checker file businessID = %v, want %d", checker.file.BusinessID, businessID)
+	}
+	if checker.file.BusinessType != BusinessTypeProductImage || !checker.file.IsPublic {
+		t.Fatalf("checker file = %#v, want public product image", checker.file)
+	}
+	if storage.saved != 1 {
+		t.Fatalf("storage saves = %d, want 1", storage.saved)
+	}
+	if len(repo.created) != 1 {
+		t.Fatalf("repo creates = %d, want 1", len(repo.created))
+	}
+	if !record.IsPublic {
+		t.Fatalf("record IsPublic = false, want true")
+	}
+	if !strings.HasPrefix(record.FileURL, "/uploads/") {
+		t.Fatalf("record FileURL = %q, want /uploads/... URL", record.FileURL)
 	}
 }
 
