@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.22",
+  "base_commit_sha": "33c5cb83c3d1c44b269d8203706065489a01553b",
+  "prompts": {
+    "8ffbe856906b8d39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eab4c-6051-7172-8695-ce354dbc33d5",
+        "model": "unknown"
+      },
+      "human_author": "p-Wangsb",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 123,
+      "overriden_lines": 0
+    }
+  }
+}
