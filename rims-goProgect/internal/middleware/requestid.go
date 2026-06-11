@@ -6,11 +6,17 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"io"
+	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"rims-go/internal/types"
 )
+
+var fallbackRequestIDCounter atomic.Uint64
 
 // RequestID injects a unique trace ID into the request context and response header.
 // If the client sends X-Request-ID, it is reused; otherwise a new one is generated.
@@ -28,6 +34,12 @@ func RequestID() gin.HandlerFunc {
 
 func generateID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return fallbackGenerateID()
+	}
 	return hex.EncodeToString(b)
+}
+
+func fallbackGenerateID() string {
+	return fmt.Sprintf("%016x%016x", time.Now().UnixNano(), fallbackRequestIDCounter.Add(1))
 }

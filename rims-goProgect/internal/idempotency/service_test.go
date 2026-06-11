@@ -6,17 +6,27 @@ package idempotency
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
 
 type fakeRepository struct {
-	record  *Record
-	created *Record
-	deleted bool
+	record    *Record
+	getErrs   []error
+	createErr error
+	created   *Record
+	deleted   bool
 }
 
 func (r *fakeRepository) Get(ctx context.Context, userID uint, scope, key string) (*Record, error) {
+	if len(r.getErrs) > 0 {
+		err := r.getErrs[0]
+		r.getErrs = r.getErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if r.record == nil {
 		return nil, ErrRecordNotFound
 	}
@@ -24,6 +34,9 @@ func (r *fakeRepository) Get(ctx context.Context, userID uint, scope, key string
 }
 
 func (r *fakeRepository) Create(ctx context.Context, record *Record) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
 	copy := *record
 	r.created = &copy
 	r.record = &copy
@@ -195,5 +208,26 @@ func TestBeginDeletesExpiredCompletedRecordAndCreatesFreshProcessingRecord(t *te
 	}
 	if repo.created.State != StateProcessing {
 		t.Fatalf("fresh state = %q, want %q", repo.created.State, StateProcessing)
+	}
+}
+
+func TestBeginReturnsCreateErrorWithFallbackGetErrorWhenRaceRecoveryFails(t *testing.T) {
+	createErr := errors.New("create processing failed")
+	getErr := errors.New("fallback get failed")
+	repo := &fakeRepository{
+		getErrs:   []error{ErrRecordNotFound, getErr},
+		createErr: createErr,
+	}
+	svc := NewService(repo, time.Hour)
+
+	_, err := svc.Begin(context.Background(), 7, "POST /api/v1/documents", "key-1", "hash-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, createErr) {
+		t.Fatalf("error = %v, want wrapped create error %v", err, createErr)
+	}
+	if !strings.Contains(err.Error(), getErr.Error()) {
+		t.Fatalf("error = %v, want fallback get error %v in message", err, getErr)
 	}
 }

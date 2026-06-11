@@ -247,6 +247,24 @@ func (auditLoggerStub) Log(ctx context.Context, e audit.Entry) error {
 	return nil
 }
 
+type documentWarehouseAccessStub struct {
+	allowed     bool
+	err         error
+	calls       int
+	userID      uint
+	warehouseID uint
+}
+
+func (s *documentWarehouseAccessStub) HasAccess(ctx context.Context, userID, warehouseID uint) (bool, error) {
+	s.calls++
+	s.userID = userID
+	s.warehouseID = warehouseID
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.allowed, nil
+}
+
 type documentAuditTxKey struct{}
 
 type documentAuditTxRunner struct {
@@ -888,5 +906,112 @@ func TestExecuteTransferLocksInventoryItemsInDeterministicOrderBeforeReading(t *
 	if !reflect.DeepEqual(invRepo.detailedCalls[:2], expectedFirstCalls) {
 		t.Fatalf("expected deterministic pre-lock order %v before inventory reads, got calls %v",
 			expectedFirstCalls, invRepo.detailedCalls)
+	}
+}
+
+func TestCompleteTransferRejectsUnauthorizedTargetWarehouseBeforeInventoryWrites(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 310}},
+		DocNo:          "DB20260610001",
+		DocType:        DocTypeTransfer,
+		Status:         StatusDraft,
+		WarehouseID:    20,
+		ToWarehouseID:  10,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 310, ProductID: 30, Quantity: 2}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	srcInv := &product.Inventory{WarehouseID: 20, ProductID: 30, Quantity: 5}
+	dstInv := &product.Inventory{WarehouseID: 10, ProductID: 30, Quantity: 1}
+	invRepo := &inventoryRepoConcurrencyStub{
+		inventories: map[string]*product.Inventory{
+			inventoryKey(20, 30): srcInv,
+			inventoryKey(10, 30): dstInv,
+		},
+	}
+	access := &documentWarehouseAccessStub{allowed: false}
+	service := &DocumentService{
+		docRepo:         docRepo,
+		lineRepo:        lineRepo,
+		txnRepo:         txnRepo,
+		invRepo:         invRepo,
+		warehouseAccess: access,
+		txRunner:        func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:           auditLoggerStub{},
+	}
+
+	err := service.Complete(context.Background(), audit.Actor{UserID: 99}, 20, 310, true)
+
+	assertAppErrorCode(t, err, types.ErrCodePermissionDenied)
+	if access.calls != 1 || access.userID != 99 || access.warehouseID != 10 {
+		t.Fatalf("target access calls/user/warehouse = %d/%d/%d, want 1/99/10",
+			access.calls, access.userID, access.warehouseID)
+	}
+	if len(invRepo.calls) != 0 || len(invRepo.detailedCalls) != 0 {
+		t.Fatalf("inventory was touched before target auth passed, calls=%v detailed=%v", invRepo.calls, invRepo.detailedCalls)
+	}
+	if srcInv.Quantity != 5 || dstInv.Quantity != 1 {
+		t.Fatalf("inventory quantities = source %d target %d, want unchanged 5/1", srcInv.Quantity, dstInv.Quantity)
+	}
+	if len(txnRepo.created) != 0 {
+		t.Fatalf("created %d transactions, want none", len(txnRepo.created))
+	}
+	if containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was called for unauthorized target warehouse, calls %v", docRepo.calls)
+	}
+	if doc.Status != StatusDraft {
+		t.Fatalf("document status = %d, want draft", doc.Status)
+	}
+}
+
+func TestCompleteTransferWrapsTargetWarehouseAccessErrors(t *testing.T) {
+	doc := &Document{
+		AuditableModel: types.AuditableModel{BaseModel: types.BaseModel{ID: 311}},
+		DocNo:          "DB20260610002",
+		DocType:        DocTypeTransfer,
+		Status:         StatusDraft,
+		WarehouseID:    20,
+		ToWarehouseID:  10,
+	}
+	docRepo := &docRepoConcurrencyStub{document: doc}
+	lineRepo := &documentLineRepoStub{
+		lines: []DocumentLine{{DocumentID: 311, ProductID: 30, Quantity: 2}},
+	}
+	txnRepo := &inventoryTransactionRepoStub{}
+	invRepo := &inventoryRepoConcurrencyStub{
+		inventories: map[string]*product.Inventory{
+			inventoryKey(20, 30): {WarehouseID: 20, ProductID: 30, Quantity: 5},
+			inventoryKey(10, 30): {WarehouseID: 10, ProductID: 30, Quantity: 1},
+		},
+	}
+	accessErr := errors.New("target access lookup failed")
+	access := &documentWarehouseAccessStub{err: accessErr}
+	service := &DocumentService{
+		docRepo:         docRepo,
+		lineRepo:        lineRepo,
+		txnRepo:         txnRepo,
+		invRepo:         invRepo,
+		warehouseAccess: access,
+		txRunner:        func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+		audit:           auditLoggerStub{},
+	}
+
+	err := service.Complete(context.Background(), audit.Actor{UserID: 99}, 20, 311, true)
+
+	appErr := assertAppErrorCode(t, err, types.ErrCodeSystemError)
+	if !errors.Is(appErr.Err, accessErr) {
+		t.Fatalf("wrapped error = %v, want %v", appErr.Err, accessErr)
+	}
+	if access.calls != 1 || access.userID != 99 || access.warehouseID != 10 {
+		t.Fatalf("target access calls/user/warehouse = %d/%d/%d, want 1/99/10",
+			access.calls, access.userID, access.warehouseID)
+	}
+	if len(invRepo.calls) != 0 || len(txnRepo.created) != 0 {
+		t.Fatalf("inventory calls/transactions = %v/%d, want none", invRepo.calls, len(txnRepo.created))
+	}
+	if containsString(docRepo.calls, "update-doc") {
+		t.Fatalf("document update was called for target access error, calls %v", docRepo.calls)
 	}
 }

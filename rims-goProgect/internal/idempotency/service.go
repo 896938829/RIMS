@@ -65,7 +65,7 @@ func (s *Service) Begin(ctx context.Context, userID uint, scope, key, requestHas
 func (s *Service) beginExisting(ctx context.Context, userID uint, scope, key, requestHash string, createErr error) (Decision, error) {
 	record, err := s.repo.Get(ctx, userID, scope, key)
 	if err != nil {
-		return Decision{}, createErr
+		return Decision{}, fmt.Errorf("create idempotency processing record: %w; fallback get failed: %v", createErr, err)
 	}
 	decision, err := s.decisionForRecord(ctx, record, requestHash, time.Now())
 	if err != nil {

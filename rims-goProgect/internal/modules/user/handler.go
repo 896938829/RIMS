@@ -201,7 +201,9 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
 		return
 	}
-	resp, err := h.userSvc.Update(c.Request.Context(), id, req)
+	ctx := context.WithValue(c.Request.Context(), types.CtxKeyUserID, types.GetUserID(c))
+	ctx = context.WithValue(ctx, types.CtxKeyRoleCode, types.GetRoleCode(c))
+	resp, err := h.userSvc.Update(ctx, id, req)
 	if err != nil {
 		h.auditAppError(c, audit.ActionUpdate, audit.ResourceUser, &id, "更新用户失败", nil, err)
 		types.FailFromError(c, err)

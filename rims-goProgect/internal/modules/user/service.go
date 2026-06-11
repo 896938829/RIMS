@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"rims-go/internal/auth"
+	"rims-go/internal/db"
 	"rims-go/internal/types"
 )
 
@@ -20,14 +21,22 @@ type UserService struct {
 	userRepo UserRepository
 	roleRepo RoleRepository
 	tokenSvc *auth.TokenService
+	txRunner db.TxRunner
 }
 
 // NewUserService creates a new UserService.
-func NewUserService(userRepo UserRepository, roleRepo RoleRepository, tokenSvc *auth.TokenService) *UserService {
+func NewUserService(userRepo UserRepository, roleRepo RoleRepository, tokenSvc *auth.TokenService, txRunner ...db.TxRunner) *UserService {
+	runner := db.TxRunner(func(ctx context.Context, fn func(context.Context) error) error {
+		return fn(ctx)
+	})
+	if len(txRunner) > 0 && txRunner[0] != nil {
+		runner = txRunner[0]
+	}
 	return &UserService{
 		userRepo: userRepo,
 		roleRepo: roleRepo,
 		tokenSvc: tokenSvc,
+		txRunner: runner,
 	}
 }
 
@@ -149,14 +158,84 @@ func (s *UserService) List(ctx context.Context, page types.PageRequest) (types.P
 	return types.NewPageResult(page, items, total), nil
 }
 
+func userActorFromContext(ctx context.Context) (uint, string) {
+	userID, _ := ctx.Value(types.CtxKeyUserID).(uint)
+	roleCode, _ := ctx.Value(types.CtxKeyRoleCode).(string)
+	return userID, roleCode
+}
+
+func isActiveAdminUser(u *User) bool {
+	return u != nil && u.Status == 1 && u.Role != nil && u.Role.Code == "admin"
+}
+
+func (s *UserService) ensureNotLastActiveAdmin(ctx context.Context) error {
+	if err := s.userRepo.LockActiveAdminGuard(ctx); err != nil {
+		return types.ErrSystem(err)
+	}
+	count, err := s.userRepo.CountActiveAdmins(ctx)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if count <= 1 {
+		return types.ErrInvalidState("至少保留一个启用的管理员")
+	}
+	return nil
+}
+
 // Update modifies an existing user's profile fields.
 func (s *UserService) Update(ctx context.Context, id uint, req UpdateUserRequest) (*UserResponse, error) {
+	var resp *UserResponse
+	err := s.txRunner(ctx, func(txCtx context.Context) error {
+		r, err := s.updateInTx(txCtx, id, req)
+		if err != nil {
+			return err
+		}
+		resp = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *UserService) updateInTx(ctx context.Context, id uint, req UpdateUserRequest) (*UserResponse, error) {
 	u, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, types.ErrNotFound("用户")
 		}
 		return nil, types.ErrSystem(err)
+	}
+
+	actorID, actorRoleCode := userActorFromContext(ctx)
+	var newRole *Role
+	if req.RoleID != nil {
+		if *req.RoleID != u.RoleID && actorRoleCode != "admin" {
+			return nil, types.ErrForbidden()
+		}
+		role, err := s.roleRepo.GetByID(ctx, *req.RoleID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, types.ErrValidation("角色不存在")
+			}
+			return nil, types.ErrSystem(err)
+		}
+		newRole = role
+	}
+
+	if req.Status != nil && *req.Status == 0 && actorID == id {
+		return nil, types.ErrInvalidState("不能禁用当前登录用户")
+	}
+
+	if isActiveAdminUser(u) {
+		disablingAdmin := req.Status != nil && *req.Status == 0
+		removingAdminRole := req.RoleID != nil && newRole != nil && newRole.Code != "admin"
+		if disablingAdmin || removingAdminRole {
+			if err := s.ensureNotLastActiveAdmin(ctx); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if req.RealName != nil {
@@ -169,13 +248,8 @@ func (s *UserService) Update(ctx context.Context, id uint, req UpdateUserRequest
 		u.Email = strings.TrimSpace(*req.Email)
 	}
 	if req.RoleID != nil {
-		if _, err := s.roleRepo.GetByID(ctx, *req.RoleID); err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, types.ErrValidation("角色不存在")
-			}
-			return nil, types.ErrSystem(err)
-		}
 		u.RoleID = *req.RoleID
+		u.Role = newRole
 	}
 	if req.Status != nil {
 		u.Status = *req.Status
@@ -193,11 +267,23 @@ func (s *UserService) Update(ctx context.Context, id uint, req UpdateUserRequest
 
 // Delete soft-deletes a user by ID.
 func (s *UserService) Delete(ctx context.Context, id uint) error {
-	if _, err := s.userRepo.GetByID(ctx, id); err != nil {
+	return s.txRunner(ctx, func(txCtx context.Context) error {
+		return s.deleteInTx(txCtx, id)
+	})
+}
+
+func (s *UserService) deleteInTx(ctx context.Context, id uint) error {
+	u, err := s.userRepo.GetByID(ctx, id)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return types.ErrNotFound("用户")
 		}
 		return types.ErrSystem(err)
+	}
+	if isActiveAdminUser(u) {
+		if err := s.ensureNotLastActiveAdmin(ctx); err != nil {
+			return err
+		}
 	}
 	if err := s.userRepo.Delete(ctx, id); err != nil {
 		return types.ErrSystem(err)

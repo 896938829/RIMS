@@ -17,7 +17,7 @@ func RegisterRoutes(
 	warehouses.Use(authMw)
 	warehouses.POST("", perm("warehouse:create"), handler.CreateWarehouse)
 	warehouses.GET("", handler.ListWarehouses)
-	warehouses.GET("/:id", handler.GetWarehouse)
+	warehouses.GET("/:id", perm("warehouse:read"), handler.GetWarehouse)
 	warehouses.PUT("/:id", perm("warehouse:update"), handler.UpdateWarehouse)
 	warehouses.DELETE("/:id", perm("warehouse:delete"), handler.DeleteWarehouse)
 

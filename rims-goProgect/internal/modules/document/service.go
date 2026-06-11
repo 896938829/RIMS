@@ -27,16 +27,24 @@ type AuditLogger interface {
 	Log(ctx context.Context, e audit.Entry) error
 }
 
+// WarehouseAccessChecker is the narrow warehouse access contract consumed by
+// transfer completion. It is satisfied structurally by the warehouse module's
+// user-warehouse repository.
+type WarehouseAccessChecker interface {
+	HasAccess(ctx context.Context, userID, warehouseID uint) (bool, error)
+}
+
 // DocumentService handles document and inventory transaction business logic.
 type DocumentService struct {
-	docRepo     DocumentRepository
-	lineRepo    DocumentLineRepository
-	txnRepo     InventoryTransactionRepository
-	invRepo     product.InventoryRepository
-	nonStdRepo  product.NonStdInventoryRepository
-	productRepo product.ProductRepository
-	txRunner    db.TxRunner
-	audit       AuditLogger
+	docRepo         DocumentRepository
+	lineRepo        DocumentLineRepository
+	txnRepo         InventoryTransactionRepository
+	invRepo         product.InventoryRepository
+	nonStdRepo      product.NonStdInventoryRepository
+	productRepo     product.ProductRepository
+	warehouseAccess WarehouseAccessChecker
+	txRunner        db.TxRunner
+	audit           AuditLogger
 }
 
 // NewDocumentService creates a new DocumentService. The auditLogger is
@@ -49,18 +57,20 @@ func NewDocumentService(
 	invRepo product.InventoryRepository,
 	nonStdRepo product.NonStdInventoryRepository,
 	productRepo product.ProductRepository,
+	warehouseAccess WarehouseAccessChecker,
 	txRunner db.TxRunner,
 	auditLogger AuditLogger,
 ) *DocumentService {
 	return &DocumentService{
-		docRepo:     docRepo,
-		lineRepo:    lineRepo,
-		txnRepo:     txnRepo,
-		invRepo:     invRepo,
-		nonStdRepo:  nonStdRepo,
-		productRepo: productRepo,
-		txRunner:    txRunner,
-		audit:       auditLogger,
+		docRepo:         docRepo,
+		lineRepo:        lineRepo,
+		txnRepo:         txnRepo,
+		invRepo:         invRepo,
+		nonStdRepo:      nonStdRepo,
+		productRepo:     productRepo,
+		warehouseAccess: warehouseAccess,
+		txRunner:        txRunner,
+		audit:           auditLogger,
 	}
 }
 
@@ -250,6 +260,15 @@ func (s *DocumentService) Complete(ctx context.Context, actor audit.Actor, wareh
 		case DocTypeTransfer:
 			if !isAdmin {
 				return types.ErrForbidden()
+			}
+			if doc.ToWarehouseID == 0 {
+				return types.ErrValidation("调拨单必须指定目标仓库")
+			}
+			if doc.ToWarehouseID == doc.WarehouseID {
+				return types.ErrValidation("调拨目标仓库不能与源仓库相同")
+			}
+			if err := s.ensureWarehouseAccess(txCtx, userID, doc.ToWarehouseID); err != nil {
+				return err
 			}
 			if err := s.executeTransfer(txCtx, doc, lines, userID, now); err != nil {
 				return err
@@ -982,6 +1001,21 @@ func sortedUniqueInventoryLockKeys(keys []inventoryLockKey) []inventoryLockKey {
 		}
 	}
 	return unique
+}
+
+func (s *DocumentService) ensureWarehouseAccess(ctx context.Context, userID, warehouseID uint) error {
+	if s.warehouseAccess == nil {
+		return types.ErrSystem(errors.New("warehouse access checker is not configured"))
+	}
+
+	ok, err := s.warehouseAccess.HasAccess(ctx, userID, warehouseID)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if !ok {
+		return types.ErrForbidden()
+	}
+	return nil
 }
 
 func (s *DocumentService) getInventoryForUpdate(ctx context.Context, warehouseID, productID uint) (*product.Inventory, error) {

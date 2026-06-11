@@ -21,6 +21,8 @@ type UserRepository interface {
 	List(ctx context.Context, page types.PageRequest) ([]User, int64, error)
 	Update(ctx context.Context, user *User) error
 	Delete(ctx context.Context, id uint) error
+	LockActiveAdminGuard(ctx context.Context) error
+	CountActiveAdmins(ctx context.Context) (int64, error)
 }
 
 type userRepo struct {
@@ -109,6 +111,22 @@ func (r *userRepo) Update(ctx context.Context, u *User) error {
 
 func (r *userRepo) Delete(ctx context.Context, id uint) error {
 	return r.getDB(ctx).Delete(&User{}, id).Error
+}
+
+func (r *userRepo) LockActiveAdminGuard(ctx context.Context) error {
+	return r.getDB(ctx).
+		Exec("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", "rims_user_admin_guard", "active_admin").
+		Error
+}
+
+func (r *userRepo) CountActiveAdmins(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.getDB(ctx).
+		Table("users AS u").
+		Joins("JOIN roles AS r ON r.id = u.role_id AND r.deleted_at IS NULL").
+		Where("u.status = ? AND u.deleted_at IS NULL AND r.code = ?", int8(1), "admin").
+		Count(&count).Error
+	return count, err
 }
 
 // RoleRepository defines data access operations for roles.

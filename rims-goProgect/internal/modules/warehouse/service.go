@@ -69,8 +69,18 @@ func (s *WarehouseService) Create(ctx context.Context, userID uint, req CreateWa
 	return &resp, nil
 }
 
-// GetByID retrieves a warehouse by ID.
-func (s *WarehouseService) GetByID(ctx context.Context, id uint) (*WarehouseResponse, error) {
+// GetByID retrieves a warehouse by ID within the actor's access scope.
+func (s *WarehouseService) GetByID(ctx context.Context, userID uint, roleCode string, id uint) (*WarehouseResponse, error) {
+	if roleCode != "admin" {
+		ok, err := s.userWarehouseRepo.HasAccess(ctx, userID, id)
+		if err != nil {
+			return nil, types.ErrSystem(err)
+		}
+		if !ok {
+			return nil, types.ErrNotFound("仓库")
+		}
+	}
+
 	w, err := s.warehouseRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -207,20 +217,25 @@ func (s *WarehouseService) BindUsers(ctx context.Context, warehouseID uint, req 
 			if err != nil {
 				return types.ErrSystem(err)
 			}
+			var count int64
+			countLoaded := false
 			if roleCode != "admin" {
-				count, err := s.userWarehouseRepo.CountByUserID(txCtx, uid)
+				count, err = s.userWarehouseRepo.CountByUserID(txCtx, uid)
 				if err != nil {
 					return types.ErrSystem(err)
 				}
+				countLoaded = true
 				if count > 0 {
 					return types.ErrValidation("普通用户只能绑定一个仓库")
 				}
 			}
 
 			// Auto-set as default if first binding
-			count, err := s.userWarehouseRepo.CountByUserID(txCtx, uid)
-			if err != nil {
-				return types.ErrSystem(err)
+			if !countLoaded {
+				count, err = s.userWarehouseRepo.CountByUserID(txCtx, uid)
+				if err != nil {
+					return types.ErrSystem(err)
+				}
 			}
 
 			uw := &UserWarehouse{

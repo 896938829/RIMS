@@ -129,6 +129,48 @@ func TestRoleWriteRoutesRequirePermission(t *testing.T) {
 	}
 }
 
+func TestUserReadRoutesRequirePermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewHandler(NewUserService(&userRepoForServiceTest{}, &roleRepoForServiceTest{}, nil), nil, nil)
+	checker := &routePermissionChecker{allowed: map[string]bool{}}
+	router := newRoleRouteAuthRouter(handler, checker)
+
+	tests := []struct {
+		name   string
+		target string
+		code   string
+	}{
+		{
+			name:   "list users",
+			target: "/api/v1/users",
+			code:   "user:list",
+		},
+		{
+			name:   "read user",
+			target: "/api/v1/users/1",
+			code:   "user:read",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker.codes = nil
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, w.Code, w.Body.String())
+			}
+			assertRouteAuthCode(t, w, types.ErrCodePermissionDenied)
+			if len(checker.codes) != 1 || checker.codes[0] != tt.code {
+				t.Fatalf("permission codes = %#v, want [%q]", checker.codes, tt.code)
+			}
+		})
+	}
+}
+
 func TestRoleWriteRoutesAllowRoleWithPermission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

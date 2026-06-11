@@ -54,7 +54,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	}
 
 	// Services
-	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc)
+	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc, db.NewTxRunner(gormDB))
 	roleSvc := user.NewRoleService(roleRepo)
 	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, db.NewTxRunner(gormDB))
 
@@ -84,6 +84,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	docSvc := document.NewDocumentService(
 		docRepo, docLineRepo, txnRepo,
 		inventoryRepo, nonStdRepo, productRepo,
+		userWarehouseRepo,
 		db.NewTxRunner(gormDB),
 		auditSvc,
 	)

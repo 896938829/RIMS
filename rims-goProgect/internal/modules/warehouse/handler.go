@@ -112,7 +112,7 @@ func (h *Handler) GetWarehouse(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	resp, err := h.warehouseSvc.GetByID(c.Request.Context(), id)
+	resp, err := h.warehouseSvc.GetByID(c.Request.Context(), types.GetUserID(c), types.GetRoleCode(c), id)
 	if err != nil {
 		types.FailFromError(c, err)
 		return

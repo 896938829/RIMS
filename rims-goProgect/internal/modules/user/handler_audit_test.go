@@ -90,6 +90,20 @@ func (r *auditUserRepoStub) Delete(ctx context.Context, id uint) error {
 	return nil
 }
 
+func (r *auditUserRepoStub) LockActiveAdminGuard(ctx context.Context) error {
+	return nil
+}
+
+func (r *auditUserRepoStub) CountActiveAdmins(ctx context.Context) (int64, error) {
+	var count int64
+	for _, u := range r.users {
+		if u.Status == 1 && u.Role != nil && u.Role.Code == "admin" {
+			count++
+		}
+	}
+	return count, nil
+}
+
 type auditRoleRepoStub struct {
 	roles          map[uint]*Role
 	next           uint
