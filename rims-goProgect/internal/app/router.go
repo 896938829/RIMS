@@ -4,6 +4,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"rims-go/internal/modules/report"
 	"rims-go/internal/modules/user"
 	"rims-go/internal/modules/warehouse"
+	"rims-go/internal/types"
 )
 
 // buildRouter creates the Gin engine with all middleware and routes.
@@ -57,6 +60,10 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	userSvc := user.NewUserService(userRepo, roleRepo, tokenSvc, db.NewTxRunner(gormDB))
 	roleSvc := user.NewRoleService(roleRepo)
 	warehouseSvc := warehouse.NewWarehouseService(warehouseRepo, userWarehouseRepo, db.NewTxRunner(gormDB))
+	userSvc.SetRegistrationWarehouseBinder(defaultRegistrationWarehouseBinder{
+		warehouseRepo:     warehouseRepo,
+		userWarehouseRepo: userWarehouseRepo,
+	})
 
 	// Handlers
 	userHandler := user.NewHandler(userSvc, roleSvc, auditSvc)
@@ -135,6 +142,29 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	audit.RegisterRoutes(api, auditHandler, authMw, permMw)
 
 	return r
+}
+
+type defaultRegistrationWarehouseBinder struct {
+	warehouseRepo     warehouse.WarehouseRepository
+	userWarehouseRepo warehouse.UserWarehouseRepository
+}
+
+func (b defaultRegistrationWarehouseBinder) BindDefaultWarehouse(ctx context.Context, userID uint) error {
+	w, err := b.warehouseRepo.GetByCode(ctx, "WH001")
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return types.ErrInvalidState("默认仓库未配置")
+		}
+		return types.ErrSystem(err)
+	}
+	if w.Status != 1 {
+		return types.ErrInvalidState("默认仓库已禁用")
+	}
+	return b.userWarehouseRepo.Create(ctx, &warehouse.UserWarehouse{
+		UserID:      userID,
+		WarehouseID: w.ID,
+		IsDefault:   true,
+	})
 }
 
 func idempotencyTTLFromConfig(cfg config.Config) time.Duration {

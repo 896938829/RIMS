@@ -65,6 +65,29 @@ func (h *Handler) Login(c *gin.Context) {
 	types.OK(c, resp)
 }
 
+// Register godoc
+// @Summary 用户注册
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param payload body RegisterRequest true "注册信息"
+// @Success 201 {object} types.Response{data=LoginResponse}
+// @Failure 400 {object} types.Response
+// @Router /api/v1/auth/register [post]
+func (h *Handler) Register(c *gin.Context) {
+	var req RegisterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
+		return
+	}
+	resp, err := h.userSvc.Register(c.Request.Context(), req)
+	if err != nil {
+		types.FailFromError(c, err)
+		return
+	}
+	types.OKCreated(c, resp)
+}
+
 // auditLogin records a login attempt to the audit log. On success it captures
 // the resolved user identity; on failure it captures the supplied username and
 // the AppError code/message. Errors from the audit write itself are swallowed

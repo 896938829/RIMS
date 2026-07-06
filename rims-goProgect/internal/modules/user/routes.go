@@ -15,6 +15,7 @@ func RegisterRoutes(
 	// Public auth routes
 	auth := rg.Group("/auth")
 	auth.POST("/login", handler.Login)
+	auth.POST("/register", handler.Register)
 
 	// Protected user routes
 	users := rg.Group("/users")

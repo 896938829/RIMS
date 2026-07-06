@@ -668,6 +668,29 @@ definitions:
       resource:
         type: string
     type: object
+  internal_modules_user.RegisterRequest:
+    properties:
+      email:
+        maxLength: 128
+        type: string
+      password:
+        maxLength: 72
+        minLength: 6
+        type: string
+      phone:
+        maxLength: 20
+        type: string
+      realName:
+        maxLength: 64
+        type: string
+      username:
+        maxLength: 64
+        minLength: 3
+        type: string
+    required:
+    - password
+    - username
+    type: object
   internal_modules_user.ResetPasswordRequest:
     properties:
       newPassword:
@@ -895,7 +918,7 @@ info:
 paths:
   /api/v1/audit/logs:
     get:
-      description: 分页查询审计日志，支持按用户/仓库/资源/动作/单据号/时间范围过滤。仅管理员可访问。
+      description: 分页查询审计日志，支持按用户/仓库/资源/动作/单据号/时间范围过滤。需要 audit:read 权限。
       parameters:
       - description: 操作人ID
         in: query
@@ -974,7 +997,7 @@ paths:
       - 审计
   /api/v1/audit/logs/{id}:
     get:
-      description: 获取单条审计日志的完整内容（含 details JSON）。仅管理员可访问。
+      description: 获取单条审计日志的完整内容（含 details JSON）。需要 audit:read 权限。
       parameters:
       - description: 审计日志ID
         in: path
@@ -1034,6 +1057,36 @@ paths:
           schema:
             $ref: '#/definitions/rims-go_internal_types.Response'
       summary: 用户登录
+      tags:
+      - 认证
+  /api/v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 注册信息
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_user.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/rims-go_internal_types.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/internal_modules_user.LoginResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/rims-go_internal_types.Response'
+      summary: 用户注册
       tags:
       - 认证
   /api/v1/documents:

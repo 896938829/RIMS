@@ -10,11 +10,14 @@ import (
 
 	"gorm.io/gorm"
 
+	"rims-go/internal/auth"
 	"rims-go/internal/types"
 )
 
 type userRepoForServiceTest struct {
 	createErr            error
+	createdUser          *User
+	nextID               uint
 	usersByID            map[uint]*User
 	countActiveAdmins    int64
 	countActiveAdminsErr error
@@ -25,6 +28,14 @@ type userRepoForServiceTest struct {
 }
 
 func (r *userRepoForServiceTest) Create(ctx context.Context, user *User) error {
+	if r.createErr == nil {
+		if r.nextID == 0 {
+			r.nextID = 100
+		}
+		user.ID = r.nextID
+		copy := *user
+		r.createdUser = &copy
+	}
 	return r.createErr
 }
 
@@ -69,7 +80,8 @@ func (r *userRepoForServiceTest) CountActiveAdmins(ctx context.Context) (int64, 
 }
 
 type roleRepoForServiceTest struct {
-	rolesByID map[uint]*Role
+	rolesByID   map[uint]*Role
+	rolesByCode map[string]*Role
 }
 
 func (*roleRepoForServiceTest) Create(ctx context.Context, role *Role) error {
@@ -89,7 +101,12 @@ func (r *roleRepoForServiceTest) GetByID(ctx context.Context, id uint) (*Role, e
 	}, nil
 }
 
-func (*roleRepoForServiceTest) GetByCode(ctx context.Context, code string) (*Role, error) {
+func (r *roleRepoForServiceTest) GetByCode(ctx context.Context, code string) (*Role, error) {
+	if r.rolesByCode != nil {
+		if role, ok := r.rolesByCode[code]; ok {
+			return role, nil
+		}
+	}
 	return nil, gorm.ErrRecordNotFound
 }
 
@@ -146,6 +163,49 @@ func TestUserServiceCreateMapsUniqueConstraintToDuplicate(t *testing.T) {
 				t.Fatalf("app error code=%d message=%q, want duplicate username", appErr.Code, appErr.Message)
 			}
 		})
+	}
+}
+
+func TestUserServiceRegisterCreatesUserBindsDefaultWarehouseAndReturnsSessionToken(t *testing.T) {
+	userRole := &Role{
+		BaseModel: types.BaseModel{ID: 2},
+		Code:      "user",
+		Name:      "普通用户",
+	}
+	userRepo := &userRepoForServiceTest{nextID: 42}
+	binder := &registrationWarehouseBinderForServiceTest{}
+	svc := NewUserService(
+		userRepo,
+		&roleRepoForServiceTest{
+			rolesByID:   map[uint]*Role{2: userRole},
+			rolesByCode: map[string]*Role{"user": userRole},
+		},
+		auth.NewTokenService("registration-test-secret", 24),
+	)
+	svc.SetRegistrationWarehouseBinder(binder)
+
+	resp, err := svc.Register(context.Background(), RegisterRequest{
+		Username: "  alice  ",
+		Password: "secret1",
+		RealName: "Alice",
+		Phone:    "13800000000",
+		Email:    "alice@example.com",
+	})
+
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if userRepo.createdUser == nil {
+		t.Fatal("created user is nil")
+	}
+	if userRepo.createdUser.Username != "alice" || userRepo.createdUser.RoleID != 2 || userRepo.createdUser.Status != 1 {
+		t.Fatalf("created user = %#v, want trimmed active ordinary user role", userRepo.createdUser)
+	}
+	if binder.calls != 1 || binder.userID != 42 {
+		t.Fatalf("binder calls/userID = %d/%d, want 1/42", binder.calls, binder.userID)
+	}
+	if resp.Token == "" || resp.User.ID != 42 || resp.User.RoleCode != "user" || resp.User.RoleName != "普通用户" {
+		t.Fatalf("register response = %#v, want token and ordinary user brief", resp)
 	}
 }
 
@@ -296,4 +356,16 @@ func assertAppErrorCode(t *testing.T, err error, want int) {
 	if appErr.Code != want {
 		t.Fatalf("app error code=%d message=%q, want %d", appErr.Code, appErr.Message, want)
 	}
+}
+
+type registrationWarehouseBinderForServiceTest struct {
+	calls  int
+	userID uint
+	err    error
+}
+
+func (b *registrationWarehouseBinderForServiceTest) BindDefaultWarehouse(ctx context.Context, userID uint) error {
+	b.calls += 1
+	b.userID = userID
+	return b.err
 }

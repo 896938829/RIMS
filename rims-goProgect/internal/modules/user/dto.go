@@ -20,6 +20,15 @@ type LoginResponse struct {
 	User      UserBrief `json:"user"`
 }
 
+// RegisterRequest holds public self-service registration data.
+type RegisterRequest struct {
+	Username string `json:"username" binding:"required,min=3,max=64"`
+	Password string `json:"password" binding:"required,min=6,max=72"`
+	RealName string `json:"realName" binding:"max=64"`
+	Phone    string `json:"phone" binding:"max=20"`
+	Email    string `json:"email" binding:"omitempty,email,max=128"`
+}
+
 // UserBrief is a compact user representation for token responses.
 type UserBrief struct {
 	ID       uint   `json:"id"`

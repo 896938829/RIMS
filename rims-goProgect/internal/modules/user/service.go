@@ -18,10 +18,18 @@ import (
 
 // UserService handles user-related business logic.
 type UserService struct {
-	userRepo UserRepository
-	roleRepo RoleRepository
-	tokenSvc *auth.TokenService
-	txRunner db.TxRunner
+	userRepo                    UserRepository
+	roleRepo                    RoleRepository
+	tokenSvc                    *auth.TokenService
+	txRunner                    db.TxRunner
+	registrationWarehouseBinder RegistrationWarehouseBinder
+}
+
+// RegistrationWarehouseBinder is implemented by the composition root to bind
+// a public registered user to the app's default warehouse without importing
+// the warehouse module into the user module.
+type RegistrationWarehouseBinder interface {
+	BindDefaultWarehouse(ctx context.Context, userID uint) error
 }
 
 // NewUserService creates a new UserService.
@@ -38,6 +46,12 @@ func NewUserService(userRepo UserRepository, roleRepo RoleRepository, tokenSvc *
 		tokenSvc: tokenSvc,
 		txRunner: runner,
 	}
+}
+
+// SetRegistrationWarehouseBinder configures default warehouse binding for
+// public registration.
+func (s *UserService) SetRegistrationWarehouseBinder(binder RegistrationWarehouseBinder) {
+	s.registrationWarehouseBinder = binder
 }
 
 // Login authenticates a user and returns a JWT token.
@@ -83,8 +97,81 @@ func (s *UserService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 	}, nil
 }
 
+// Register creates a self-service ordinary user, binds it to the default
+// warehouse, and returns a login response so the frontend can enter the app.
+func (s *UserService) Register(ctx context.Context, req RegisterRequest) (*LoginResponse, error) {
+	if s.tokenSvc == nil {
+		return nil, types.ErrSystem(errors.New("token service is not configured"))
+	}
+	if s.registrationWarehouseBinder == nil {
+		return nil, types.ErrSystem(errors.New("registration warehouse binder is not configured"))
+	}
+
+	var created *User
+	err := s.txRunner(ctx, func(txCtx context.Context) error {
+		role, err := s.roleRepo.GetByCode(txCtx, "user")
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return types.ErrValidation("默认角色不存在")
+			}
+			return types.ErrSystem(err)
+		}
+
+		u, err := s.createUser(txCtx, CreateUserRequest{
+			Username: req.Username,
+			Password: req.Password,
+			RealName: req.RealName,
+			Phone:    req.Phone,
+			Email:    req.Email,
+			RoleID:   role.ID,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.registrationWarehouseBinder.BindDefaultWarehouse(txCtx, u.ID); err != nil {
+			return err
+		}
+		created = u
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	token, expiresAt, err := s.tokenSvc.GenerateToken(
+		created.ID,
+		created.Username,
+		created.RoleID,
+		created.Role.Code,
+	)
+	if err != nil {
+		return nil, types.ErrSystem(err)
+	}
+
+	return &LoginResponse{
+		Token:     token,
+		ExpiresAt: expiresAt,
+		User: UserBrief{
+			ID:       created.ID,
+			Username: created.Username,
+			RealName: created.RealName,
+			RoleCode: created.Role.Code,
+			RoleName: created.Role.Name,
+		},
+	}, nil
+}
+
 // Create creates a new user account.
 func (s *UserService) Create(ctx context.Context, req CreateUserRequest) (*UserResponse, error) {
+	u, err := s.createUser(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp := ToResponse(u)
+	return &resp, nil
+}
+
+func (s *UserService) createUser(ctx context.Context, req CreateUserRequest) (*User, error) {
 	// Check username uniqueness
 	existing, err := s.userRepo.GetByUsername(ctx, strings.TrimSpace(req.Username))
 	if err == nil && existing != nil {
@@ -126,8 +213,7 @@ func (s *UserService) Create(ctx context.Context, req CreateUserRequest) (*UserR
 	}
 
 	u.Role = role
-	resp := ToResponse(u)
-	return &resp, nil
+	return u, nil
 }
 
 // GetByID retrieves a user by ID.
