@@ -16,11 +16,19 @@ TMP_DIR="$(mktemp -d)"
 LAST_BODY=""
 CREATED_WAREHOUSE_ID=""
 ADMIN_USER_ID=""
+CREATED_OPERATOR_ID=""
+CREATED_OPERATOR_WAREHOUSE_IDS=()
 
 cleanup() {
 	if [[ -n "${CREATED_WAREHOUSE_ID}" && -n "${ADMIN_TOKEN:-}" && -n "${ADMIN_USER_ID}" ]]; then
 		api "cleanup unbind admin warehouse" DELETE "/api/v1/warehouses/${CREATED_WAREHOUSE_ID}/users/${ADMIN_USER_ID}" 204 "${ADMIN_TOKEN}" "" true || true
 		api "cleanup delete warehouse" DELETE "/api/v1/warehouses/${CREATED_WAREHOUSE_ID}" 204 "${ADMIN_TOKEN}" "" true || true
+	fi
+	if [[ -n "${CREATED_OPERATOR_ID}" && -n "${ADMIN_TOKEN:-}" ]]; then
+		for warehouse_id in "${CREATED_OPERATOR_WAREHOUSE_IDS[@]}"; do
+			api "cleanup unbind smoke operator ${warehouse_id}" DELETE "/api/v1/warehouses/${warehouse_id}/users/${CREATED_OPERATOR_ID}" 204 "${ADMIN_TOKEN}" "" true || true
+		done
+		api "cleanup delete smoke operator" DELETE "/api/v1/users/${CREATED_OPERATOR_ID}" 204 "${ADMIN_TOKEN}" "" true || true
 	fi
 	rm -rf "${TMP_DIR}"
 }
@@ -140,6 +148,40 @@ login_probe() {
 	LOGIN_USER_ID="$(json_value "${LAST_BODY}" "data.user.id")"
 }
 
+try_login_probe() {
+	local username="$1"
+	local password="$2"
+	local probe="login ${username}"
+	if ! api "${probe}" POST "/api/v1/auth/login" 200 "" "{\"username\":\"${username}\",\"password\":\"${password}\"}" true; then
+		return 1
+	fi
+	assert_success_envelope "${probe}"
+	LOGIN_TOKEN="$(json_value "${LAST_BODY}" "data.token")"
+	LOGIN_USER_ID="$(json_value "${LAST_BODY}" "data.user.id")"
+}
+
+register_temporary_operator() {
+	local username="m8_smoke_operator_$(date +%s)"
+	local password="${OPERATOR_PASSWORD}"
+	api "register temporary operator" POST "/api/v1/auth/register" 201 "" "{\"username\":\"${username}\",\"password\":\"${password}\",\"realName\":\"M8 Smoke Operator\"}"
+	assert_success_envelope "register temporary operator"
+	OPERATOR_TOKEN="$(json_value "${LAST_BODY}" "data.token")"
+	CREATED_OPERATOR_ID="$(json_value "${LAST_BODY}" "data.user.id")"
+
+	api "temporary operator warehouse list" GET "/api/v1/users/me/warehouses" 200 "${OPERATOR_TOKEN}"
+	assert_success_envelope "temporary operator warehouse list"
+	mapfile -t CREATED_OPERATOR_WAREHOUSE_IDS < <(python3 - "$LAST_BODY" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    payload = json.load(f)
+for item in payload.get("data") or []:
+    print(item["warehouseId"])
+PY
+)
+}
+
 api "health endpoint" GET "/healthz" 200
 python3 - "$LAST_BODY" <<'PY' || fail "health endpoint" "status was not ok"
 import json
@@ -154,8 +196,11 @@ PY
 login_probe "${ADMIN_USERNAME}" "${ADMIN_PASSWORD}"
 ADMIN_TOKEN="${LOGIN_TOKEN}"
 ADMIN_USER_ID="${LOGIN_USER_ID}"
-login_probe "${OPERATOR_USERNAME}" "${OPERATOR_PASSWORD}"
-OPERATOR_TOKEN="${LOGIN_TOKEN}"
+if try_login_probe "${OPERATOR_USERNAME}" "${OPERATOR_PASSWORD}"; then
+	OPERATOR_TOKEN="${LOGIN_TOKEN}"
+else
+	register_temporary_operator
+fi
 
 api "admin can list roles" GET "/api/v1/roles" 200 "${ADMIN_TOKEN}"
 assert_success_envelope "admin can list roles"
