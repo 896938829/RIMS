@@ -1,0 +1,35 @@
+rims-goProgect/internal/modules/user/routes.go
+  93602ea992f58d3f 36-37,45
+rims-goProgect/internal/modules/warehouse/service.go
+  93602ea992f58d3f 171,181-187,365-374
+rims-goProgect/migrations/000013_role_read_permission_seed.sql
+  93602ea992f58d3f 1-25
+rims-goProgect/internal/modules/warehouse/routes_permission_test.go
+  93602ea992f58d3f 169-193,219,221-225,233-237,326-331,337,351,361-370
+rims-goProgect/internal/modules/user/handler_role_auth_test.go
+  93602ea992f58d3f 178-224
+rims-goProgect/internal/modules/product/repository_test.go
+  93602ea992f58d3f 1-60
+rims-goProgect/internal/modules/product/repository.go
+  93602ea992f58d3f 211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.24",
+  "base_commit_sha": "6764c2a58ddaff7dfb775e7d1ff586cfcaa19481",
+  "prompts": {
+    "93602ea992f58d3f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3f4e-c716-71f1-90e3-e9617091a177",
+        "model": "unknown"
+      },
+      "human_author": "p-Wangsb",
+      "messages": [],
+      "total_additions": 225,
+      "total_deletions": 20,
+      "accepted_lines": 211,
+      "overriden_lines": 4
+    }
+  }
+}
