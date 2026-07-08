@@ -229,8 +229,7 @@ func (r *inventoryRepo) ListAlerts(ctx context.Context, warehouseID uint, page t
 	}
 
 	var inventories []Inventory
-	if err := r.getDB(ctx).Preload("Product").
-		Where("warehouse_id = ? AND alert_threshold > 0 AND quantity <= alert_threshold", warehouseID).
+	if err := d.Preload("Product").
 		Offset(page.Offset()).Limit(page.PageSize).
 		Order("inventories.quantity ASC").
 		Find(&inventories).Error; err != nil {
