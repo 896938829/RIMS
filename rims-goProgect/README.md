@@ -340,6 +340,16 @@ cd rims-goProgect && go run ./cmd/cleanup
 cd rims-goProgect && swag init -g internal/app/app.go --parseDependency --parseInternal -o docs
 ```
 
+## M8 Backend Smoke
+
+Run after migrations are applied and the API server is available:
+
+```bash
+BASE_URL=http://localhost:8080 ./scripts/m8_backend_smoke.sh
+```
+
+The smoke verifies the repaired M8 backend contracts for permissions, current warehouse restore, inventory search consistency, and deletion conflicts.
+
 ## 环境变量 / Environment Variables
 
 详见 `.env.example` / See `.env.example` for all supported variables.
