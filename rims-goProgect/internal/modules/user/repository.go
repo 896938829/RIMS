@@ -140,6 +140,7 @@ type RoleRepository interface {
 	AssignPermissions(ctx context.Context, roleID uint, permIDs []uint) error
 	ListPermissions(ctx context.Context) ([]Permission, error)
 	HasPermission(ctx context.Context, roleID uint, code string) (bool, error)
+	CountActiveUsersByRoleID(ctx context.Context, roleID uint) (int64, error)
 }
 
 type roleRepo struct {
@@ -225,4 +226,13 @@ func (r *roleRepo) HasPermission(ctx context.Context, roleID uint, code string) 
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (r *roleRepo) CountActiveUsersByRoleID(ctx context.Context, roleID uint) (int64, error) {
+	var count int64
+	err := r.getDB(ctx).
+		Model(&User{}).
+		Where("role_id = ? AND status = ?", roleID, int8(1)).
+		Count(&count).Error
+	return count, err
 }

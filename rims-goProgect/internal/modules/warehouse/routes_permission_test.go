@@ -166,6 +166,75 @@ func TestWarehouseUserBindingReusesCountByUserIDForNonAdmin(t *testing.T) {
 	}
 }
 
+func TestSwitchCurrentWarehousePersistsDefaultWarehouse(t *testing.T) {
+	uwRepo := &routeUserWarehouseRepo{}
+	svc := NewWarehouseService(routeWarehouseRepo{}, uwRepo, passThroughRouteWarehouseTx)
+
+	resp, err := svc.SwitchCurrentWarehouse(
+		context.Background(),
+		42,
+		SwitchWarehouseRequest{WarehouseID: 7},
+	)
+
+	if err != nil {
+		t.Fatalf("SwitchCurrentWarehouse() error = %v, want nil", err)
+	}
+	if resp == nil {
+		t.Fatal("SwitchCurrentWarehouse() response = nil, want warehouse response")
+	}
+	if uwRepo.clearDefaultCalls != 1 || uwRepo.clearDefaultUserID != 42 {
+		t.Fatalf("ClearDefault calls/user = %d/%d, want 1/42", uwRepo.clearDefaultCalls, uwRepo.clearDefaultUserID)
+	}
+	if uwRepo.setDefaultCalls != 1 || uwRepo.setDefaultUserID != 42 || uwRepo.setDefaultWarehouseID != 7 {
+		t.Fatalf("SetDefault calls/user/warehouse = %d/%d/%d, want 1/42/7",
+			uwRepo.setDefaultCalls, uwRepo.setDefaultUserID, uwRepo.setDefaultWarehouseID)
+	}
+}
+
+func TestGetMyWarehousesMarksDefaultBindingAsCurrent(t *testing.T) {
+	uwRepo := &routeUserWarehouseRepo{
+		listByUserIDResult: []UserWarehouse{
+			{UserID: 42, WarehouseID: 7, IsDefault: true},
+			{UserID: 42, WarehouseID: 8, IsDefault: false},
+		},
+	}
+	svc := NewWarehouseService(routeWarehouseRepo{}, uwRepo, passThroughRouteWarehouseTx)
+
+	resp, err := svc.GetMyWarehouses(context.Background(), 42)
+
+	if err != nil {
+		t.Fatalf("GetMyWarehouses() error = %v, want nil", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("GetMyWarehouses() len = %d, want 2", len(resp))
+	}
+	if !resp[0].IsDefault || !resp[0].IsCurrent {
+		t.Fatalf("first binding current/default = %v/%v, want true/true", resp[0].IsCurrent, resp[0].IsDefault)
+	}
+	if resp[1].IsDefault || resp[1].IsCurrent {
+		t.Fatalf("second binding current/default = %v/%v, want false/false", resp[1].IsCurrent, resp[1].IsDefault)
+	}
+}
+
+func TestDeleteWarehouseRejectsActiveUserBindings(t *testing.T) {
+	uwRepo := &routeUserWarehouseRepo{countActiveBindingsByWarehouseIDResult: 1}
+	svc := NewWarehouseService(routeWarehouseRepo{}, uwRepo, passThroughRouteWarehouseTx)
+
+	err := svc.Delete(context.Background(), 7)
+
+	assertWarehouseAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if uwRepo.countActiveBindingsByWarehouseIDCalls != 1 || uwRepo.countActiveBindingsByWarehouseID != 7 {
+		t.Fatalf("CountActiveBindingsByWarehouseID calls/warehouse = %d/%d, want 1/7",
+			uwRepo.countActiveBindingsByWarehouseIDCalls, uwRepo.countActiveBindingsByWarehouseID)
+	}
+	if uwRepo.listByWarehouseIDCalls != 0 {
+		t.Fatalf("ListByWarehouseID calls = %d, want 0 for delete conflict check", uwRepo.listByWarehouseIDCalls)
+	}
+	if uwRepo.deleteByWarehouseIDCalls != 0 {
+		t.Fatalf("DeleteByWarehouseID calls = %d, want 0 when warehouse is bound", uwRepo.deleteByWarehouseIDCalls)
+	}
+}
+
 func newWarehousePermissionRouter(allowedPermission string) *gin.Engine {
 	return newWarehousePermissionRouterWithUserWarehouseRepo(allowedPermission, &routeUserWarehouseRepo{})
 }
@@ -237,22 +306,35 @@ func (routeWarehouseRepo) Update(context.Context, *Warehouse) error { return nil
 func (routeWarehouseRepo) Delete(context.Context, uint) error       { return nil }
 
 type routeUserWarehouseRepo struct {
-	hasAccessSet         bool
-	hasAccessAllowed     bool
-	hasAccessErr         error
-	hasAccessCalls       int
-	hasAccessUserID      uint
-	hasAccessWarehouseID uint
-	userRoleCode         string
-	countByUserIDCalls   int
-	countByUserIDUserID  uint
-	countByUserIDResult  int64
-	countByUserIDErr     error
+	hasAccessSet                           bool
+	hasAccessAllowed                       bool
+	hasAccessErr                           error
+	hasAccessCalls                         int
+	hasAccessUserID                        uint
+	hasAccessWarehouseID                   uint
+	userRoleCode                           string
+	countByUserIDCalls                     int
+	countByUserIDUserID                    uint
+	countByUserIDResult                    int64
+	countByUserIDErr                       error
+	listByUserIDResult                     []UserWarehouse
+	listByWarehouseIDCalls                 int
+	listByWarehouseIDTotal                 int64
+	countActiveBindingsByWarehouseIDCalls  int
+	countActiveBindingsByWarehouseID       uint
+	countActiveBindingsByWarehouseIDResult int64
+	deleteByWarehouseIDCalls               int
+	clearDefaultCalls                      int
+	clearDefaultUserID                     uint
+	setDefaultCalls                        int
+	setDefaultUserID                       uint
+	setDefaultWarehouseID                  uint
 }
 
 func (r *routeUserWarehouseRepo) Create(context.Context, *UserWarehouse) error { return nil }
 func (r *routeUserWarehouseRepo) Delete(context.Context, uint, uint) error     { return nil }
 func (r *routeUserWarehouseRepo) DeleteByWarehouseID(context.Context, uint) error {
+	r.deleteByWarehouseIDCalls++
 	return nil
 }
 func (r *routeUserWarehouseRepo) GetByUserAndWarehouse(_ context.Context, userID, warehouseID uint) (*UserWarehouse, error) {
@@ -262,16 +344,31 @@ func (r *routeUserWarehouseRepo) GetByUserAndWarehouse(_ context.Context, userID
 	return &UserWarehouse{UserID: userID, WarehouseID: warehouseID}, nil
 }
 func (r *routeUserWarehouseRepo) ListByUserID(context.Context, uint) ([]UserWarehouse, error) {
-	return nil, nil
+	return r.listByUserIDResult, nil
 }
 func (r *routeUserWarehouseRepo) ListByWarehouseID(context.Context, uint, types.PageRequest) ([]WarehouseUserInfo, int64, error) {
-	return []WarehouseUserInfo{}, 0, nil
+	r.listByWarehouseIDCalls++
+	return []WarehouseUserInfo{}, r.listByWarehouseIDTotal, nil
+}
+func (r *routeUserWarehouseRepo) CountActiveBindingsByWarehouseID(_ context.Context, warehouseID uint) (int64, error) {
+	r.countActiveBindingsByWarehouseIDCalls++
+	r.countActiveBindingsByWarehouseID = warehouseID
+	return r.countActiveBindingsByWarehouseIDResult, nil
 }
 func (r *routeUserWarehouseRepo) GetDefaultByUserID(context.Context, uint) (*UserWarehouse, error) {
 	return nil, gorm.ErrRecordNotFound
 }
-func (r *routeUserWarehouseRepo) ClearDefault(context.Context, uint) error     { return nil }
-func (r *routeUserWarehouseRepo) SetDefault(context.Context, uint, uint) error { return nil }
+func (r *routeUserWarehouseRepo) ClearDefault(_ context.Context, userID uint) error {
+	r.clearDefaultCalls++
+	r.clearDefaultUserID = userID
+	return nil
+}
+func (r *routeUserWarehouseRepo) SetDefault(_ context.Context, userID, warehouseID uint) error {
+	r.setDefaultCalls++
+	r.setDefaultUserID = userID
+	r.setDefaultWarehouseID = warehouseID
+	return nil
+}
 func (r *routeUserWarehouseRepo) CountByUserID(ctx context.Context, userID uint) (int64, error) {
 	r.countByUserIDCalls++
 	r.countByUserIDUserID = userID

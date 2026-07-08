@@ -211,6 +211,14 @@ func (s *ProductService) Delete(ctx context.Context, id uint) error {
 		return types.ErrInvalidState("该商品存在库存记录，无法删除")
 	}
 
+	documentLineCount, err := s.productRepo.CountDocumentLinesByProductID(ctx, id)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if documentLineCount > 0 {
+		return types.ErrInvalidState("该商品存在单据记录，无法删除")
+	}
+
 	if err := s.productRepo.Delete(ctx, id); err != nil {
 		return types.ErrSystem(err)
 	}

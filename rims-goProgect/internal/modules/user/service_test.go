@@ -80,8 +80,13 @@ func (r *userRepoForServiceTest) CountActiveAdmins(ctx context.Context) (int64, 
 }
 
 type roleRepoForServiceTest struct {
-	rolesByID   map[uint]*Role
-	rolesByCode map[string]*Role
+	rolesByID                     map[uint]*Role
+	rolesByCode                   map[string]*Role
+	countActiveUsersByRoleID      int64
+	countActiveUsersByRoleIDErr   error
+	countActiveUsersByRoleIDCalls int
+	countActiveUsersRoleID        uint
+	deleteCalled                  bool
 }
 
 func (*roleRepoForServiceTest) Create(ctx context.Context, role *Role) error {
@@ -118,7 +123,8 @@ func (*roleRepoForServiceTest) Update(ctx context.Context, role *Role) error {
 	return nil
 }
 
-func (*roleRepoForServiceTest) Delete(ctx context.Context, id uint) error {
+func (r *roleRepoForServiceTest) Delete(ctx context.Context, id uint) error {
+	r.deleteCalled = true
 	return nil
 }
 
@@ -132,6 +138,12 @@ func (*roleRepoForServiceTest) ListPermissions(ctx context.Context) ([]Permissio
 
 func (*roleRepoForServiceTest) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
 	return false, nil
+}
+
+func (r *roleRepoForServiceTest) CountActiveUsersByRoleID(ctx context.Context, roleID uint) (int64, error) {
+	r.countActiveUsersByRoleIDCalls++
+	r.countActiveUsersRoleID = roleID
+	return r.countActiveUsersByRoleID, r.countActiveUsersByRoleIDErr
 }
 
 func TestUserServiceCreateMapsUniqueConstraintToDuplicate(t *testing.T) {
@@ -342,6 +354,50 @@ func TestUserServiceDeleteRejectsDeletingLastActiveAdmin(t *testing.T) {
 	}
 }
 
+func TestUserServiceDeleteRejectsActiveWarehouseBindings(t *testing.T) {
+	target := &User{
+		BaseModel: types.BaseModel{ID: 10},
+		Username:  "clerk",
+		RoleID:    2,
+		Status:    1,
+		Role:      &Role{BaseModel: types.BaseModel{ID: 2}, Code: "user"},
+	}
+	repo := &userRepoForServiceTest{usersByID: map[uint]*User{10: target}, countActiveAdmins: 2}
+	bindings := &warehouseBindingCounterForServiceTest{count: 1}
+	svc := NewUserService(repo, &roleRepoForServiceTest{}, nil)
+	svc.SetDeletionWarehouseBindingCounter(bindings)
+
+	err := svc.Delete(context.Background(), 10)
+
+	assertAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if bindings.calls != 1 || bindings.userID != 10 {
+		t.Fatalf("CountByUserID calls/user = %d/%d, want 1/10", bindings.calls, bindings.userID)
+	}
+	if repo.deleteCalled {
+		t.Fatal("Delete was called, want active warehouse binding rejection before persistence")
+	}
+}
+
+func TestRoleServiceDeleteRejectsAssignedUsers(t *testing.T) {
+	role := &Role{BaseModel: types.BaseModel{ID: 2}, Code: "operator"}
+	repo := &roleRepoForServiceTest{
+		rolesByID:                map[uint]*Role{2: role},
+		countActiveUsersByRoleID: 1,
+	}
+	svc := NewRoleService(repo)
+
+	err := svc.Delete(context.Background(), 2)
+
+	assertAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if repo.countActiveUsersByRoleIDCalls != 1 || repo.countActiveUsersRoleID != 2 {
+		t.Fatalf("CountActiveUsersByRoleID calls/role = %d/%d, want 1/2",
+			repo.countActiveUsersByRoleIDCalls, repo.countActiveUsersRoleID)
+	}
+	if repo.deleteCalled {
+		t.Fatal("Delete was called, want assigned role rejection before persistence")
+	}
+}
+
 func actorContext(userID uint, roleCode string) context.Context {
 	ctx := context.WithValue(context.Background(), types.CtxKeyUserID, userID)
 	return context.WithValue(ctx, types.CtxKeyRoleCode, roleCode)
@@ -368,4 +424,17 @@ func (b *registrationWarehouseBinderForServiceTest) BindDefaultWarehouse(ctx con
 	b.calls += 1
 	b.userID = userID
 	return b.err
+}
+
+type warehouseBindingCounterForServiceTest struct {
+	count  int64
+	calls  int
+	userID uint
+	err    error
+}
+
+func (c *warehouseBindingCounterForServiceTest) CountByUserID(ctx context.Context, userID uint) (int64, error) {
+	c.calls++
+	c.userID = userID
+	return c.count, c.err
 }

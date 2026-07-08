@@ -112,6 +112,15 @@ func (r *auditUserWarehouseRepoStub) ListByUserID(ctx context.Context, userID ui
 func (r *auditUserWarehouseRepoStub) ListByWarehouseID(ctx context.Context, warehouseID uint, page types.PageRequest) ([]WarehouseUserInfo, int64, error) {
 	return nil, 0, nil
 }
+func (r *auditUserWarehouseRepoStub) CountActiveBindingsByWarehouseID(ctx context.Context, warehouseID uint) (int64, error) {
+	var count int64
+	for _, byWarehouse := range r.bindings {
+		if byWarehouse[warehouseID] != nil {
+			count++
+		}
+	}
+	return count, nil
+}
 func (r *auditUserWarehouseRepoStub) GetDefaultByUserID(ctx context.Context, userID uint) (*UserWarehouse, error) {
 	return nil, gorm.ErrRecordNotFound
 }

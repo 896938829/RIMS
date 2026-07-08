@@ -114,6 +114,7 @@ type UserWarehouseRepository interface {
 	GetByUserAndWarehouse(ctx context.Context, userID, warehouseID uint) (*UserWarehouse, error)
 	ListByUserID(ctx context.Context, userID uint) ([]UserWarehouse, error)
 	ListByWarehouseID(ctx context.Context, warehouseID uint, page types.PageRequest) ([]WarehouseUserInfo, int64, error)
+	CountActiveBindingsByWarehouseID(ctx context.Context, warehouseID uint) (int64, error)
 	GetDefaultByUserID(ctx context.Context, userID uint) (*UserWarehouse, error)
 	ClearDefault(ctx context.Context, userID uint) error
 	SetDefault(ctx context.Context, userID, warehouseID uint) error
@@ -212,6 +213,15 @@ func (r *userWarehouseRepo) ListByWarehouseID(ctx context.Context, warehouseID u
 	}
 
 	return list, total, nil
+}
+
+func (r *userWarehouseRepo) CountActiveBindingsByWarehouseID(ctx context.Context, warehouseID uint) (int64, error) {
+	var count int64
+	err := r.getDB(ctx).
+		Model(&UserWarehouse{}).
+		Where("warehouse_id = ?", warehouseID).
+		Count(&count).Error
+	return count, err
 }
 
 func (r *userWarehouseRepo) GetDefaultByUserID(ctx context.Context, userID uint) (*UserWarehouse, error) {

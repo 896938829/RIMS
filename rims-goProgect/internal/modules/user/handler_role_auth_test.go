@@ -57,6 +57,10 @@ func (roleRepoStub) HasPermission(ctx context.Context, roleID uint, code string)
 	return false, nil
 }
 
+func (roleRepoStub) CountActiveUsersByRoleID(ctx context.Context, roleID uint) (int64, error) {
+	return 0, nil
+}
+
 type routePermissionChecker struct {
 	allowed map[string]bool
 	codes   []string
@@ -150,6 +154,53 @@ func TestUserReadRoutesRequirePermission(t *testing.T) {
 			name:   "read user",
 			target: "/api/v1/users/1",
 			code:   "user:read",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker.codes = nil
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, w.Code, w.Body.String())
+			}
+			assertRouteAuthCode(t, w, types.ErrCodePermissionDenied)
+			if len(checker.codes) != 1 || checker.codes[0] != tt.code {
+				t.Fatalf("permission codes = %#v, want [%q]", checker.codes, tt.code)
+			}
+		})
+	}
+}
+
+func TestRoleAndPermissionReadRoutesRequirePermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewHandler(nil, NewRoleService(roleRepoStub{}), nil)
+	checker := &routePermissionChecker{allowed: map[string]bool{}}
+	router := newRoleRouteAuthRouter(handler, checker)
+
+	tests := []struct {
+		name   string
+		target string
+		code   string
+	}{
+		{
+			name:   "list roles",
+			target: "/api/v1/roles",
+			code:   "role:list",
+		},
+		{
+			name:   "read role",
+			target: "/api/v1/roles/1",
+			code:   "role:read",
+		},
+		{
+			name:   "list permissions",
+			target: "/api/v1/permissions",
+			code:   "permission:list",
 		},
 	}
 

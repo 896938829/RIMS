@@ -33,8 +33,8 @@ func RegisterRoutes(
 	roles := rg.Group("/roles")
 	roles.Use(authMw)
 	roles.POST("", perm("role:create"), handler.CreateRole)
-	roles.GET("", handler.ListRoles)
-	roles.GET("/:id", handler.GetRole)
+	roles.GET("", perm("role:list"), handler.ListRoles)
+	roles.GET("/:id", perm("role:read"), handler.GetRole)
 	roles.PUT("/:id", perm("role:update"), handler.UpdateRole)
 	roles.DELETE("/:id", perm("role:delete"), handler.DeleteRole)
 	roles.PUT("/:id/permissions", perm("role:assign_permissions"), handler.AssignPermissions)
@@ -42,5 +42,5 @@ func RegisterRoutes(
 	// Protected permission routes
 	permissions := rg.Group("/permissions")
 	permissions.Use(authMw)
-	permissions.GET("", handler.ListPermissions)
+	permissions.GET("", perm("permission:list"), handler.ListPermissions)
 }

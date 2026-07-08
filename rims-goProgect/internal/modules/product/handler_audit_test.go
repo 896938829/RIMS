@@ -73,6 +73,9 @@ func (r *auditProductRepoStub) Delete(ctx context.Context, id uint) error {
 	delete(r.products, id)
 	return nil
 }
+func (r *auditProductRepoStub) CountDocumentLinesByProductID(ctx context.Context, productID uint) (int64, error) {
+	return 0, nil
+}
 
 type auditInventoryRepoStub struct {
 	items map[uint]*Inventory

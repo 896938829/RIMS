@@ -23,6 +23,7 @@ type UserService struct {
 	tokenSvc                    *auth.TokenService
 	txRunner                    db.TxRunner
 	registrationWarehouseBinder RegistrationWarehouseBinder
+	deletionWarehouseCounter    DeletionWarehouseBindingCounter
 }
 
 // RegistrationWarehouseBinder is implemented by the composition root to bind
@@ -30,6 +31,12 @@ type UserService struct {
 // the warehouse module into the user module.
 type RegistrationWarehouseBinder interface {
 	BindDefaultWarehouse(ctx context.Context, userID uint) error
+}
+
+// DeletionWarehouseBindingCounter is implemented by the warehouse module so
+// user deletion can reject active bindings without importing that module here.
+type DeletionWarehouseBindingCounter interface {
+	CountByUserID(ctx context.Context, userID uint) (int64, error)
 }
 
 // NewUserService creates a new UserService.
@@ -52,6 +59,11 @@ func NewUserService(userRepo UserRepository, roleRepo RoleRepository, tokenSvc *
 // public registration.
 func (s *UserService) SetRegistrationWarehouseBinder(binder RegistrationWarehouseBinder) {
 	s.registrationWarehouseBinder = binder
+}
+
+// SetDeletionWarehouseBindingCounter configures the user delete conflict guard.
+func (s *UserService) SetDeletionWarehouseBindingCounter(counter DeletionWarehouseBindingCounter) {
+	s.deletionWarehouseCounter = counter
 }
 
 // Login authenticates a user and returns a JWT token.
@@ -371,6 +383,15 @@ func (s *UserService) deleteInTx(ctx context.Context, id uint) error {
 			return err
 		}
 	}
+	if s.deletionWarehouseCounter != nil {
+		count, err := s.deletionWarehouseCounter.CountByUserID(ctx, id)
+		if err != nil {
+			return types.ErrSystem(err)
+		}
+		if count > 0 {
+			return types.ErrInvalidState("用户已绑定仓库，无法删除")
+		}
+	}
 	if err := s.userRepo.Delete(ctx, id); err != nil {
 		return types.ErrSystem(err)
 	}
@@ -538,7 +559,17 @@ func (s *RoleService) Delete(ctx context.Context, id uint) error {
 		}
 		return types.ErrSystem(err)
 	}
-	return s.roleRepo.Delete(ctx, id)
+	count, err := s.roleRepo.CountActiveUsersByRoleID(ctx, id)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if count > 0 {
+		return types.ErrInvalidState("角色已分配用户，无法删除")
+	}
+	if err := s.roleRepo.Delete(ctx, id); err != nil {
+		return types.ErrSystem(err)
+	}
+	return nil
 }
 
 // AssignPermissions replaces a role's permission set.

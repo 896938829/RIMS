@@ -25,6 +25,7 @@ type ProductRepository interface {
 	List(ctx context.Context, page types.PageRequest) ([]Product, int64, error)
 	Update(ctx context.Context, p *Product) error
 	Delete(ctx context.Context, id uint) error
+	CountDocumentLinesByProductID(ctx context.Context, productID uint) (int64, error)
 }
 
 type productRepo struct {
@@ -101,6 +102,15 @@ func (r *productRepo) Update(ctx context.Context, p *Product) error {
 
 func (r *productRepo) Delete(ctx context.Context, id uint) error {
 	return r.getDB(ctx).Delete(&Product{}, id).Error
+}
+
+func (r *productRepo) CountDocumentLinesByProductID(ctx context.Context, productID uint) (int64, error) {
+	var count int64
+	err := r.getDB(ctx).
+		Table("document_lines").
+		Where("product_id = ? AND deleted_at IS NULL", productID).
+		Count(&count).Error
+	return count, err
 }
 
 // --- Inventory Repository ---
@@ -198,8 +208,7 @@ func (r *inventoryRepo) ListByWarehouse(ctx context.Context, warehouseID uint, p
 	}
 
 	var inventories []Inventory
-	if err := r.getDB(ctx).Preload("Product").
-		Where("warehouse_id = ?", warehouseID).
+	if err := d.Preload("Product").
 		Offset(page.Offset()).Limit(page.PageSize).
 		Order("inventories.id DESC").
 		Find(&inventories).Error; err != nil {

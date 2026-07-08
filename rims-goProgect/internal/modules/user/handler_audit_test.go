@@ -163,6 +163,9 @@ func (r *auditRoleRepoStub) ListPermissions(ctx context.Context) ([]Permission, 
 func (r *auditRoleRepoStub) HasPermission(ctx context.Context, roleID uint, code string) (bool, error) {
 	return false, nil
 }
+func (r *auditRoleRepoStub) CountActiveUsersByRoleID(ctx context.Context, roleID uint) (int64, error) {
+	return 0, nil
+}
 
 func TestUserHandlerAuditsCreateUpdateDeleteAndAssignPermissions(t *testing.T) {
 	gin.SetMode(gin.TestMode)

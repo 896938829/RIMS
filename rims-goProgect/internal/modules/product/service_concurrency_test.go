@@ -5,6 +5,7 @@ package product
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -13,7 +14,10 @@ import (
 	"rims-go/internal/types"
 )
 
-type productRepoConcurrencyStub struct{}
+type productRepoConcurrencyStub struct {
+	documentLineCount int64
+	deleteCalled      bool
+}
 
 func (productRepoConcurrencyStub) Create(ctx context.Context, p *Product) error {
 	return nil
@@ -39,15 +43,22 @@ func (productRepoConcurrencyStub) Update(ctx context.Context, p *Product) error 
 	return nil
 }
 
-func (productRepoConcurrencyStub) Delete(ctx context.Context, id uint) error {
+func (r *productRepoConcurrencyStub) Delete(ctx context.Context, id uint) error {
+	r.deleteCalled = true
 	return nil
 }
 
+func (r *productRepoConcurrencyStub) CountDocumentLinesByProductID(ctx context.Context, productID uint) (int64, error) {
+	return r.documentLineCount, nil
+}
+
 type inventoryRepoConcurrencyStub struct {
-	calls          []string
-	inventory      *Inventory
-	settingsUpdate *inventorySettingsUpdate
-	savedInventory *Inventory
+	calls               []string
+	inventory           *Inventory
+	settingsUpdate      *inventorySettingsUpdate
+	savedInventory      *Inventory
+	existsByProductID   bool
+	existsByProductCall uint
 }
 
 type inventorySettingsUpdate struct {
@@ -90,7 +101,8 @@ func (r *inventoryRepoConcurrencyStub) GetByWarehouseAndProduct(ctx context.Cont
 }
 
 func (r *inventoryRepoConcurrencyStub) ExistsByProductID(ctx context.Context, productID uint) (bool, error) {
-	return false, nil
+	r.existsByProductCall = productID
+	return r.existsByProductID, nil
 }
 
 func (r *inventoryRepoConcurrencyStub) ListByWarehouse(ctx context.Context, warehouseID uint, page types.PageRequest) ([]Inventory, int64, error) {
@@ -191,7 +203,7 @@ func TestConvertNonStdLocksNonStdAndInventoryBeforeUpdating(t *testing.T) {
 	txRunner := func(ctx context.Context, fn func(context.Context) error) error {
 		return fn(ctx)
 	}
-	service := NewProductService(productRepoConcurrencyStub{}, invRepo, nonStdRepo, txRunner)
+	service := NewProductService(&productRepoConcurrencyStub{}, invRepo, nonStdRepo, txRunner)
 
 	err := service.ConvertNonStd(context.Background(), 99, 10, 1, ConvertNonStdRequest{
 		ProductID: 20,
@@ -227,7 +239,7 @@ func TestUpdateInventoryUsesSettingsUpdateWithoutSavingQuantity(t *testing.T) {
 			Status:         1,
 		},
 	}
-	service := NewProductService(productRepoConcurrencyStub{}, invRepo, &nonStdRepoConcurrencyStub{}, nil)
+	service := NewProductService(&productRepoConcurrencyStub{}, invRepo, &nonStdRepoConcurrencyStub{}, nil)
 
 	resp, err := service.UpdateInventory(context.Background(), 99, 10, 7, UpdateInventoryRequest{
 		AlertThreshold: &threshold,
@@ -256,5 +268,45 @@ func TestUpdateInventoryUsesSettingsUpdateWithoutSavingQuantity(t *testing.T) {
 	}
 	if resp.Quantity != 3 || resp.AlertThreshold != threshold || resp.Status != 2 {
 		t.Fatalf("unexpected inventory response: %+v", resp)
+	}
+}
+
+func TestProductServiceDeleteRejectsInventoryRecords(t *testing.T) {
+	productRepo := &productRepoConcurrencyStub{}
+	inventoryRepo := &inventoryRepoConcurrencyStub{existsByProductID: true}
+	service := NewProductService(productRepo, inventoryRepo, &nonStdRepoConcurrencyStub{}, nil)
+
+	err := service.Delete(context.Background(), 20)
+
+	assertProductAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if inventoryRepo.existsByProductCall != 20 {
+		t.Fatalf("ExistsByProductID product = %d, want 20", inventoryRepo.existsByProductCall)
+	}
+	if productRepo.deleteCalled {
+		t.Fatal("product delete was called, want inventory conflict rejection before persistence")
+	}
+}
+
+func TestProductServiceDeleteRejectsDocumentUsage(t *testing.T) {
+	productRepo := &productRepoConcurrencyStub{documentLineCount: 1}
+	inventoryRepo := &inventoryRepoConcurrencyStub{}
+	service := NewProductService(productRepo, inventoryRepo, &nonStdRepoConcurrencyStub{}, nil)
+
+	err := service.Delete(context.Background(), 20)
+
+	assertProductAppErrorCode(t, err, types.ErrCodeInvalidState)
+	if productRepo.deleteCalled {
+		t.Fatal("product delete was called, want document usage rejection before persistence")
+	}
+}
+
+func assertProductAppErrorCode(t *testing.T, err error, want int) {
+	t.Helper()
+	var appErr *types.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("err = %v, want AppError code %d", err, want)
+	}
+	if appErr.Code != want {
+		t.Fatalf("app error code=%d message=%q, want %d", appErr.Code, appErr.Message, want)
 	}
 }

@@ -106,6 +106,10 @@ func (r *fileACLUserWarehouseRepoStub) CountByUserID(ctx context.Context, userID
 	return 0, nil
 }
 
+func (r *fileACLUserWarehouseRepoStub) CountActiveBindingsByWarehouseID(ctx context.Context, warehouseID uint) (int64, error) {
+	return 0, nil
+}
+
 func (r *fileACLUserWarehouseRepoStub) GetUserRoleCode(ctx context.Context, userID uint) (string, error) {
 	return "", nil
 }

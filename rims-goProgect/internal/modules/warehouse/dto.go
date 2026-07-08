@@ -80,6 +80,7 @@ type UserWarehouseResponse struct {
 	ID          uint               `json:"id"`
 	WarehouseID uint               `json:"warehouseId"`
 	IsDefault   bool               `json:"isDefault"`
+	IsCurrent   bool               `json:"isCurrent"`
 	Warehouse   *WarehouseResponse `json:"warehouse,omitempty"`
 }
 
@@ -89,6 +90,7 @@ func ToUserWarehouseResponse(uw *UserWarehouse) UserWarehouseResponse {
 		ID:          uw.ID,
 		WarehouseID: uw.WarehouseID,
 		IsDefault:   uw.IsDefault,
+		IsCurrent:   uw.IsDefault,
 	}
 	if uw.Warehouse != nil {
 		whResp := ToWarehouseResponse(uw.Warehouse)

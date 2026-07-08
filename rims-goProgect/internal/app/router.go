@@ -64,6 +64,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 		warehouseRepo:     warehouseRepo,
 		userWarehouseRepo: userWarehouseRepo,
 	})
+	userSvc.SetDeletionWarehouseBindingCounter(userWarehouseRepo)
 
 	// Handlers
 	userHandler := user.NewHandler(userSvc, roleSvc, auditSvc)

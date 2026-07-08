@@ -320,6 +320,9 @@ func (r *documentProductRepoStub) List(ctx context.Context, page types.PageReque
 }
 func (r *documentProductRepoStub) Update(ctx context.Context, p *product.Product) error { return nil }
 func (r *documentProductRepoStub) Delete(ctx context.Context, id uint) error            { return nil }
+func (r *documentProductRepoStub) CountDocumentLinesByProductID(ctx context.Context, productID uint) (int64, error) {
+	return 0, nil
+}
 
 func TestDocumentServiceAuditsCreateInsideTransaction(t *testing.T) {
 	auditErr := errors.New("audit insert failed")

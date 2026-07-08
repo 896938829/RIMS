@@ -209,6 +209,9 @@ func (routeProductRepo) List(context.Context, types.PageRequest) ([]Product, int
 }
 func (routeProductRepo) Update(context.Context, *Product) error { return nil }
 func (routeProductRepo) Delete(context.Context, uint) error     { return nil }
+func (routeProductRepo) CountDocumentLinesByProductID(context.Context, uint) (int64, error) {
+	return 0, nil
+}
 
 type routeInventoryRepo struct{}
 

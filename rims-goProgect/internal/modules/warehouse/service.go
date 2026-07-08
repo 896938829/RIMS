@@ -168,13 +168,21 @@ func (s *WarehouseService) Update(ctx context.Context, userID uint, id uint, req
 	return &resp, nil
 }
 
-// Delete soft-deletes a warehouse and all its user bindings.
+// Delete soft-deletes a warehouse. Active user bindings must be removed first.
 func (s *WarehouseService) Delete(ctx context.Context, id uint) error {
 	if _, err := s.warehouseRepo.GetByID(ctx, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return types.ErrNotFound("仓库")
 		}
 		return types.ErrSystem(err)
+	}
+
+	total, err := s.userWarehouseRepo.CountActiveBindingsByWarehouseID(ctx, id)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if total > 0 {
+		return types.ErrInvalidState("仓库已绑定用户，无法删除")
 	}
 
 	return s.txRunner(ctx, func(txCtx context.Context) error {
@@ -352,6 +360,18 @@ func (s *WarehouseService) SwitchCurrentWarehouse(ctx context.Context, userID ui
 	w, err := s.warehouseRepo.GetByID(ctx, req.WarehouseID)
 	if err != nil {
 		return nil, types.ErrSystem(err)
+	}
+
+	if err := s.txRunner(ctx, func(txCtx context.Context) error {
+		if err := s.userWarehouseRepo.ClearDefault(txCtx, userID); err != nil {
+			return types.ErrSystem(err)
+		}
+		if err := s.userWarehouseRepo.SetDefault(txCtx, userID, req.WarehouseID); err != nil {
+			return types.ErrSystem(err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	resp := ToWarehouseResponse(w)
