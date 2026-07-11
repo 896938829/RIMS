@@ -114,7 +114,7 @@ SELECT concat_ws('|',
 }
 
 non_fixture_products_before="$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")"
-non_fixture_documents_before="$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%'")"
+non_fixture_documents_before="$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")"
 
 RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" bash "${SEED_SCRIPT}"
 first_fingerprint="$(fixture_fingerprint)"
@@ -137,6 +137,23 @@ for warehouse_code in WH001 M9-WH-02; do
 done
 
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products"
-assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%'")" "${non_fixture_documents_before}" "non-fixture documents"
+assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents"
 
-echo "M9 development seed idempotency test passed: ${second_fingerprint}"
+sql "DELETE FROM documents WHERE doc_no = 'M9E2E-RESET-PROBE';
+INSERT INTO documents (
+  doc_no, doc_type, status, warehouse_id, remark, created_by, updated_by
+)
+SELECT 'M9E2E-RESET-PROBE', 2, 1, w.id, 'M9-E2E: reset probe', u.id, u.id
+FROM warehouses w, users u
+WHERE w.code = 'WH001' AND w.deleted_at IS NULL
+  AND u.username = 'admin' AND u.deleted_at IS NULL;"
+assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "1" "reset probe setup"
+
+RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" bash "${SEED_SCRIPT}" --reset
+reset_fingerprint="$(fixture_fingerprint)"
+assert_eq "${reset_fingerprint}" "${second_fingerprint}" "fixture fingerprint after reset"
+assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "0" "M9 E2E reset probe cleanup"
+assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products after reset"
+assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents after reset"
+
+echo "M9 development seed idempotency and reset test passed: ${reset_fingerprint}"
