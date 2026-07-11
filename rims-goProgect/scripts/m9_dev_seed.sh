@@ -16,6 +16,34 @@ fail() {
 	exit 1
 }
 
+load_dotenv() {
+	local line='' line_number=0 key='' value='' first='' last='' length=0
+	while IFS= read -r line || [[ -n "${line}" ]]; do
+		line_number=$((line_number + 1))
+		line=${line%$'\r'}
+		[[ "${line}" =~ ^[[:space:]]*$ ]] && continue
+		[[ "${line}" =~ ^[[:space:]]*# ]] && continue
+		if [[ ! "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			fail "malformed environment record at line ${line_number}"
+		fi
+		key=${BASH_REMATCH[1]}
+		value=${BASH_REMATCH[2]}
+		[[ ! "${value}" =~ [[:cntrl:]] ]] ||
+			fail "control character in environment value at line ${line_number}"
+		length=${#value}
+		if (( length > 0 )); then
+			first=${value:0:1}
+			last=${value:length-1:1}
+			if [[ "${first}" == '"' || "${first}" == "'" ]]; then
+				(( length >= 2 )) && [[ "${last}" == "${first}" ]] ||
+					fail "unmatched environment quote at line ${line_number}"
+				value=${value:1:length-2}
+			fi
+		fi
+		export "${key}=${value}"
+	done < "${ENV_FILE}"
+}
+
 [[ "${RIMS_ALLOW_DEV_SEED:-}" == "1" ]] || fail "set RIMS_ALLOW_DEV_SEED=1 explicitly"
 [[ -f "${ENV_FILE}" ]] || fail "environment file not found: ${ENV_FILE}"
 [[ -f "${SQL_FILE}" ]] || fail "SQL file not found: ${SQL_FILE}"
@@ -24,10 +52,7 @@ case "${MODE}" in
 	*) fail "supported modes are seed and --reset" ;;
 esac
 
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-set +a
+load_dotenv
 
 case "${APP_ENV:-}" in
 	dev|development|test) ;;
@@ -121,6 +146,7 @@ fi
 
 fixture_counts="$("${PSQL[@]}" -qAt -c "
 SELECT json_build_object(
+  'database', current_database(),
   'products', (SELECT count(*) FROM products WHERE code LIKE 'M9-PAGE-%'),
   'operatorUsers', (SELECT count(*) FROM users WHERE username = 'm9_operator' AND deleted_at IS NULL),
   'warehouses', (SELECT count(*) FROM warehouses WHERE code = 'M9-WH-02' AND deleted_at IS NULL),

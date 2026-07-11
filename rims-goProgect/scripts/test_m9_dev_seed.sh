@@ -58,10 +58,34 @@ if RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${GUARD_TMP_DIR}/wrong-db.env" bash "${S
 	fail "seed accepted a non-local DB_NAME"
 fi
 
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-set +a
+dotenv_probe="${GUARD_TMP_DIR}/dotenv-executed"
+write_guard_env "${GUARD_TMP_DIR}/literal.env" "dev" "127.0.0.1" "production"
+echo "M9_DOTENV_PROBE=\$(touch ${dotenv_probe})" >> "${GUARD_TMP_DIR}/literal.env"
+if RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${GUARD_TMP_DIR}/literal.env" bash "${SEED_SCRIPT}" >/dev/null 2>&1; then
+	fail "literal dotenv guard unexpectedly reached the database"
+fi
+[[ ! -e "${dotenv_probe}" ]] || fail "seed executed dotenv content"
+
+while IFS= read -r env_line || [[ -n "${env_line}" ]]; do
+	env_line=${env_line%$'\r'}
+	[[ "${env_line}" =~ ^[[:space:]]*$ ]] && continue
+	[[ "${env_line}" =~ ^[[:space:]]*# ]] && continue
+	[[ "${env_line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] ||
+		fail "malformed environment record in test configuration"
+	env_key=${BASH_REMATCH[1]}
+	env_value=${BASH_REMATCH[2]}
+	env_length=${#env_value}
+	if (( env_length > 1 )); then
+		env_first=${env_value:0:1}
+		env_last=${env_value:env_length-1:1}
+		if [[ "${env_first}" == '"' || "${env_first}" == "'" ]]; then
+			[[ "${env_last}" == "${env_first}" ]] ||
+				fail "unmatched environment quote in test configuration"
+			env_value=${env_value:1:env_length-2}
+		fi
+	fi
+	export "${env_key}=${env_value}"
+done < "${ENV_FILE}"
 
 export PGPASSWORD="${DB_PASSWORD:?DB_PASSWORD is required}"
 if command -v psql >/dev/null 2>&1; then
