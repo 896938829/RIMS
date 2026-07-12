@@ -115,9 +115,9 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	}
 	fileRepo := file.NewFileRepository(gormDB)
 	fileACL := fileAccessChecker{docRepo: docRepo, whRepo: userWarehouseRepo}
-	fileSvc := file.NewFileService(
+	fileSvc := file.NewFileServiceWithLimits(
 		fileRepo, localStorage,
-		cfg.MaxUploadMB, cfg.AllowedExts,
+		cfg.MaxUploadMB, cfg.MaxAttachmentsPerObject, cfg.AllowedExts,
 		"/api/v1/files/%d/download",
 		fileACL,
 	)

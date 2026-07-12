@@ -86,23 +86,60 @@ func (s *LocalStorage) absPath(objectKey string) (string, error) {
 }
 
 // Save writes the reader to disk under baseDir/objectKey.
-func (s *LocalStorage) Save(_ context.Context, objectKey string, r io.Reader) error {
+func (s *LocalStorage) Save(ctx context.Context, objectKey string, r io.Reader) error {
 	abs, err := s.absPath(objectKey)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	dir := filepath.Dir(abs)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("local storage: mkdir: %w", err)
 	}
-	f, err := os.Create(abs)
+
+	f, err := os.CreateTemp(dir, "."+filepath.Base(abs)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("local storage: create file: %w", err)
+		return fmt.Errorf("local storage: create temporary file: %w", err)
 	}
-	defer f.Close()
-	if _, err := io.Copy(f, r); err != nil {
+	temporaryPath := f.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = f.Close()
+		}
+		_ = os.Remove(temporaryPath)
+	}()
+
+	if _, err := io.Copy(f, &contextReader{ctx: ctx, reader: r}); err != nil {
 		return fmt.Errorf("local storage: write: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("local storage: write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("local storage: sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("local storage: close: %w", err)
+	}
+	closed = true
+	if err := os.Rename(temporaryPath, abs); err != nil {
+		return fmt.Errorf("local storage: rename: %w", err)
+	}
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.reader.Read(p)
+	}
 }
 
 // Open returns a ReadCloser backed by the on-disk file.

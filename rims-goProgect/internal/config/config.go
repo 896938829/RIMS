@@ -32,9 +32,10 @@ type Config struct {
 	JWTExpireHours int
 
 	// File upload
-	UploadDir   string
-	MaxUploadMB int
-	AllowedExts string
+	UploadDir               string
+	MaxUploadMB             int
+	MaxAttachmentsPerObject int
+	AllowedExts             string
 
 	// Maintenance cleanup
 	IdempotencyKeyTTLHours   int
@@ -77,6 +78,7 @@ func Load() (Config, error) {
 	v.SetDefault("JWT_EXPIRE_HOURS", 24)
 	v.SetDefault("UPLOAD_DIR", "./uploads")
 	v.SetDefault("MAX_UPLOAD_MB", 10)
+	v.SetDefault("MAX_ATTACHMENTS_PER_OBJECT", 9)
 	v.SetDefault("ALLOWED_EXTS", ".jpg,.jpeg,.png,.gif,.xlsx,.csv,.pdf")
 	v.SetDefault("IDEMPOTENCY_KEY_TTL_HOURS", 24)
 	v.SetDefault("FILE_DELETED_RETENTION_DAYS", 30)
@@ -103,6 +105,7 @@ func Load() (Config, error) {
 		JWTExpireHours:           v.GetInt("JWT_EXPIRE_HOURS"),
 		UploadDir:                v.GetString("UPLOAD_DIR"),
 		MaxUploadMB:              v.GetInt("MAX_UPLOAD_MB"),
+		MaxAttachmentsPerObject:  v.GetInt("MAX_ATTACHMENTS_PER_OBJECT"),
 		AllowedExts:              v.GetString("ALLOWED_EXTS"),
 		IdempotencyKeyTTLHours:   v.GetInt("IDEMPOTENCY_KEY_TTL_HOURS"),
 		FileDeletedRetentionDays: v.GetInt("FILE_DELETED_RETENTION_DAYS"),
@@ -123,6 +126,9 @@ func Load() (Config, error) {
 	}
 	if cfg.JWTExpireHours <= 0 {
 		return Config{}, fmt.Errorf("JWT_EXPIRE_HOURS must be > 0")
+	}
+	if cfg.MaxAttachmentsPerObject <= 0 {
+		return Config{}, fmt.Errorf("MAX_ATTACHMENTS_PER_OBJECT must be > 0")
 	}
 
 	return cfg, nil

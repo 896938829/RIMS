@@ -94,3 +94,11 @@ func (r *fileRepo) List(ctx context.Context, filter ListFilter, page types.PageR
 func (r *fileRepo) SoftDelete(ctx context.Context, id uint) error {
 	return r.getDB(ctx).Delete(&FileAttachment{}, id).Error
 }
+
+func (r *fileRepo) CountByBinding(ctx context.Context, businessType string, businessID uint) (int64, error) {
+	var count int64
+	err := r.getDB(ctx).Model(&FileAttachment{}).
+		Where("business_type = ? AND business_id = ?", businessType, businessID).
+		Count(&count).Error
+	return count, err
+}

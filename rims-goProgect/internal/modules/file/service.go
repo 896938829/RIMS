@@ -59,12 +59,17 @@ func (ownerAdminAccessChecker) CanAccessFile(_ context.Context, actor FileActor,
 
 // FileService orchestrates file upload, retrieval and deletion logic.
 type FileService struct {
-	repo              FileRepository
-	storage           Storage
-	maxSize           int64
-	allowedExt        map[string]bool
-	downloadURLFormat string // e.g. "/api/v1/files/%d/download"
-	accessChecker     BusinessAccessChecker
+	repo                    FileRepository
+	storage                 Storage
+	maxSize                 int64
+	allowedExt              map[string]bool
+	downloadURLFormat       string // e.g. "/api/v1/files/%d/download"
+	accessChecker           BusinessAccessChecker
+	maxAttachmentsPerObject int
+}
+
+type bindingAttachmentCounter interface {
+	CountByBinding(ctx context.Context, businessType string, businessID uint) (int64, error)
 }
 
 // NewFileService constructs a FileService.
@@ -75,6 +80,11 @@ type FileService struct {
 //   - downloadURLFormat: template like "/api/v1/files/%d/download" used for
 //     building URLs of private (non-public) files once the record ID is known.
 func NewFileService(repo FileRepository, storage Storage, maxUploadMB int, allowedExts string, downloadURLFormat string, accessChecker BusinessAccessChecker) *FileService {
+	return NewFileServiceWithLimits(repo, storage, maxUploadMB, 9, allowedExts, downloadURLFormat, accessChecker)
+}
+
+// NewFileServiceWithLimits constructs a service with explicit attachment bounds.
+func NewFileServiceWithLimits(repo FileRepository, storage Storage, maxUploadMB, maxAttachmentsPerObject int, allowedExts string, downloadURLFormat string, accessChecker BusinessAccessChecker) *FileService {
 	var maxSize int64
 	if maxUploadMB > 0 {
 		maxSize = int64(maxUploadMB) * 1024 * 1024
@@ -83,12 +93,13 @@ func NewFileService(repo FileRepository, storage Storage, maxUploadMB int, allow
 		accessChecker = ownerAdminAccessChecker{}
 	}
 	return &FileService{
-		repo:              repo,
-		storage:           storage,
-		maxSize:           maxSize,
-		allowedExt:        parseAllowedExts(allowedExts),
-		downloadURLFormat: downloadURLFormat,
-		accessChecker:     accessChecker,
+		repo:                    repo,
+		storage:                 storage,
+		maxSize:                 maxSize,
+		allowedExt:              parseAllowedExts(allowedExts),
+		downloadURLFormat:       downloadURLFormat,
+		accessChecker:           accessChecker,
+		maxAttachmentsPerObject: maxAttachmentsPerObject,
 	}
 }
 
@@ -146,6 +157,9 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		}); err != nil {
 			return nil, err
 		}
+		if err := s.enforceAttachmentLimit(ctx, businessType, *req.BusinessID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Enforce size limit at read time so we never buffer more than allowed,
@@ -180,6 +194,9 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		sniffN = buf.Len()
 	}
 	mimeType := http.DetectContentType(buf.Bytes()[:sniffN])
+	if !mimeMatchesExtension(ext, mimeType) {
+		return nil, types.ErrValidation(fmt.Sprintf("文件内容与扩展名不匹配：%s", ext))
+	}
 
 	// Generate object key: <yyyy>/<mm>/<random>.<ext>
 	now := time.Now().UTC()
@@ -227,6 +244,45 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	}
 
 	return record, nil
+}
+
+func (s *FileService) enforceAttachmentLimit(ctx context.Context, businessType string, businessID uint) error {
+	if s.maxAttachmentsPerObject <= 0 {
+		return nil
+	}
+	counter, ok := s.repo.(bindingAttachmentCounter)
+	if !ok {
+		return nil
+	}
+	count, err := counter.CountByBinding(ctx, businessType, businessID)
+	if err != nil {
+		return types.ErrSystem(err)
+	}
+	if count >= int64(s.maxAttachmentsPerObject) {
+		return types.ErrValidation(fmt.Sprintf("附件数量不能超过%d个", s.maxAttachmentsPerObject))
+	}
+	return nil
+}
+
+func mimeMatchesExtension(ext, mimeType string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return mimeType == "image/jpeg"
+	case ".png":
+		return mimeType == "image/png"
+	case ".gif":
+		return mimeType == "image/gif"
+	case ".pdf":
+		return mimeType == "application/pdf"
+	case ".csv":
+		return mimeType == "text/plain" || mimeType == "text/csv" || mimeType == "application/csv"
+	case ".xlsx":
+		return mimeType == "application/zip" ||
+			mimeType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	default:
+		return true
+	}
 }
 
 // Get retrieves a file attachment record by ID.

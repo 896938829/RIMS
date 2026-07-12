@@ -4,6 +4,7 @@
 package file
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -269,7 +270,7 @@ func TestFileServiceUploadProductImageWithBusinessIDAuthorizesAndReturnsPublicUR
 		BusinessType: BusinessTypeProductImage,
 		BusinessID:   &businessID,
 		OriginalName: "product.jpg",
-		Reader:       strings.NewReader("file body"),
+		Reader:       bytes.NewReader([]byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}),
 	})
 
 	if err != nil {
