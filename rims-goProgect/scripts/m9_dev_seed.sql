@@ -146,7 +146,7 @@ WITH desired AS (
     SELECT
         w.id AS warehouse_id,
         p.id AS product_id,
-        CASE WHEN n <= 5 THEN 2 ELSE 20 + n + CASE WHEN w.code = 'M9-WH-02' THEN 10 ELSE 0 END END AS quantity,
+        CASE WHEN n <= 5 THEN 2 + CASE WHEN w.code = 'M9-WH-02' THEN 10 ELSE 0 END ELSE 20 + n + CASE WHEN w.code = 'M9-WH-02' THEN 10 ELSE 0 END END AS quantity,
         5 AS alert_threshold
     FROM generate_series(1, 45) AS series(n)
     JOIN products AS p

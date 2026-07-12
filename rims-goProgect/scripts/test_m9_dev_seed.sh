@@ -153,12 +153,14 @@ assert_eq "$(sql "SELECT count(*) FROM user_warehouses uw JOIN users u ON u.id =
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no LIKE 'M9DOC%'")" "15" "fixture documents"
 assert_eq "$(sql "SELECT count(*) FROM inventory_transactions WHERE doc_no LIKE 'M9DOC%'")" "15" "fixture transactions"
 assert_eq "$(sql "SELECT count(*) FROM non_std_inventories WHERE temp_label LIKE 'M9-NS-%' AND deleted_at IS NULL")" "25" "fixture non-standard inventory"
+assert_eq "$(sql "SELECT i.quantity FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0001' AND w.code = 'WH001' AND i.deleted_at IS NULL")" "2" "WH001 M9-PAGE-0001 quantity"
+assert_eq "$(sql "SELECT i.quantity FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0001' AND w.code = 'M9-WH-02' AND i.deleted_at IS NULL")" "12" "M9-WH-02 M9-PAGE-0001 quantity"
 
 for warehouse_code in WH001 M9-WH-02; do
 	assert_eq "$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code LIKE 'M9-PAGE-%' AND w.code = '${warehouse_code}' AND i.deleted_at IS NULL")" "45" "${warehouse_code} fixture inventory"
-	low_stock_count="$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code LIKE 'M9-PAGE-%' AND w.code = '${warehouse_code}' AND i.deleted_at IS NULL AND i.quantity <= i.alert_threshold")"
-	(( low_stock_count >= 5 )) || fail "${warehouse_code} low-stock rows: expected at least 5, got ${low_stock_count}"
 done
+assert_eq "$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code LIKE 'M9-PAGE-%' AND w.code = 'WH001' AND i.deleted_at IS NULL AND i.quantity <= i.alert_threshold")" "5" "WH001 low-stock rows"
+assert_eq "$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code LIKE 'M9-PAGE-%' AND w.code = 'M9-WH-02' AND i.deleted_at IS NULL AND i.quantity <= i.alert_threshold")" "0" "M9-WH-02 low-stock rows"
 
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents"
