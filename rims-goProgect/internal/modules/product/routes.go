@@ -27,6 +27,7 @@ func RegisterRoutes(
 	inventory.Use(authMw, whScope)
 	inventory.GET("", handler.ListInventory)
 	inventory.GET("/alerts", handler.ListAlerts)
+	inventory.GET("/barcode/:barcode", handler.GetInventoryByBarcode)
 	inventory.GET("/:id", handler.GetInventory)
 	inventory.PUT("/:id", perm("inventory:update"), handler.UpdateInventory)
 

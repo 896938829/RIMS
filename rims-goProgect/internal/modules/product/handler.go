@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -229,6 +230,34 @@ func (h *Handler) ListInventory(c *gin.Context) {
 		return
 	}
 	types.OKWithPage(c, result)
+}
+
+// GetInventoryByBarcode godoc
+// @Summary 查询当前仓库条码库存
+// @Tags 库存
+// @Security BearerAuth
+// @Produce json
+// @Param barcode path string true "条码"
+// @Success 200 {object} types.Response{data=InventoryResponse}
+// @Failure 404 {object} types.Response
+// @Failure 422 {object} types.Response
+// @Router /api/v1/inventory/barcode/{barcode} [get]
+func (h *Handler) GetInventoryByBarcode(c *gin.Context) {
+	barcode := strings.TrimSpace(c.Param("barcode"))
+	if barcode == "" {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation("条码不能为空"))
+		return
+	}
+	resp, err := h.productSvc.GetInventoryByBarcode(
+		c.Request.Context(),
+		types.GetWarehouseID(c),
+		barcode,
+	)
+	if err != nil {
+		types.FailFromError(c, err)
+		return
+	}
+	types.OK(c, resp)
 }
 
 // GetInventory godoc

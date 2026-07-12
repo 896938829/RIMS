@@ -114,6 +114,38 @@ func (s *ProductService) GetByBarcode(ctx context.Context, barcode string) (*Pro
 	return p, nil
 }
 
+// GetInventoryByBarcode returns an active product's inventory in one warehouse.
+func (s *ProductService) GetInventoryByBarcode(ctx context.Context, warehouseID uint, barcode string) (*InventoryResponse, error) {
+	barcode = strings.TrimSpace(barcode)
+	if barcode == "" {
+		return nil, types.ErrValidation("条码不能为空")
+	}
+	p, err := s.productRepo.GetByBarcode(ctx, barcode)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, types.ErrNotFound("商品")
+		}
+		return nil, types.ErrSystem(err)
+	}
+	if p.Status != 1 {
+		return nil, types.ErrInvalidState("商品已停用")
+	}
+
+	inv, err := s.inventoryRepo.GetByWarehouseAndProduct(ctx, warehouseID, p.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, types.ErrInvalidState("当前仓库无可用库存")
+		}
+		return nil, types.ErrSystem(err)
+	}
+	if inv.Status == 0 {
+		return nil, types.ErrInvalidState("当前仓库库存已停用")
+	}
+	inv.Product = p
+	resp := ToInventoryResponse(inv)
+	return &resp, nil
+}
+
 // List returns a paginated list of products.
 func (s *ProductService) List(ctx context.Context, page types.PageRequest, isAdmin bool) (types.PageResult, error) {
 	products, total, err := s.productRepo.List(ctx, page)
