@@ -137,6 +137,23 @@ rims-goProgect/
 
 ## 快速开始 / Quick Start
 
+### 前端 M10 本地联调 / Frontend M10 Local Acceptance
+
+前端仓库的 `scripts/rims_m10_smoke.ps1` 可以从停止状态自行启动本后端、
+PostgreSQL 依赖和指定 Android AVD。受管运行会把 `UPLOAD_DIR` 指向前端仓库的
+`.runtime/rims-local/providers/files`，并设置 `MAX_UPLOAD_MB=10`、
+`MAX_ATTACHMENTS_PER_OBJECT=9`；不会把测试附件写进本源码目录，也不需要云存储。
+
+本地夹具提供 `admin/admin123`、`m9_operator/admin123`，以及
+`M10-ACTIVE-001`、`M10-DISABLED-001`、`M10-WH001-ONLY-001` 条码。
+种子和 reset 仅允许 `dev`、`development`、`test` 环境。验收结束会恢复夹具
+基线并清理受管附件目录；已有 PostgreSQL、非受管进程和外部文件不会被接管。
+
+The frontend M10 wrapper owns the local server, AVD, loopback bridge, fixture
+reset, and runtime upload directory. It exercises real barcode, document,
+inventory-transaction, file ACL, upload, replace, and delete APIs without a
+cloud provider, then restores the deterministic baseline.
+
 所有命令在 WSL 中执行 / All commands run inside WSL:
 
 ```bash
