@@ -5,6 +5,8 @@ package file
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -77,13 +79,17 @@ func (r *fileRepo) List(ctx context.Context, filter ListFilter, page types.PageR
 	}
 
 	var total int64
-	if err := d.Count(&total).Error; err != nil {
+	if err := d.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var list []FileAttachment
-	if err := d.Offset(page.Offset()).Limit(page.PageSize).
-		Order("id DESC").
+	order := "id DESC"
+	if filter.BusinessType != "" && filter.BusinessID != nil {
+		order = "position ASC, id ASC"
+	}
+	if err := d.Session(&gorm.Session{}).Offset(page.Offset()).Limit(page.PageSize).
+		Order(order).
 		Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
@@ -101,4 +107,63 @@ func (r *fileRepo) CountByBinding(ctx context.Context, businessType string, busi
 		Where("business_type = ? AND business_id = ?", businessType, businessID).
 		Count(&count).Error
 	return count, err
+}
+
+// ListAllByBinding returns the complete visible attachment set for one binding.
+func (r *fileRepo) ListAllByBinding(ctx context.Context, businessType string, businessID uint) ([]FileAttachment, error) {
+	var files []FileAttachment
+	err := r.getDB(ctx).
+		Where("business_type = ? AND business_id = ?", businessType, businessID).
+		Order("position ASC, id ASC").
+		Find(&files).Error
+	return files, err
+}
+
+// MaxPositionByBinding returns -1 when a binding has no visible attachments.
+func (r *fileRepo) MaxPositionByBinding(ctx context.Context, businessType string, businessID uint) (int, error) {
+	var row struct {
+		Position int
+	}
+	err := r.getDB(ctx).Model(&FileAttachment{}).
+		Select("COALESCE(MAX(position), -1) AS position").
+		Where("business_type = ? AND business_id = ?", businessType, businessID).
+		Find(&row).Error
+	return row.Position, err
+}
+
+// UpdatePositions atomically assigns positions according to fileIDs order.
+func (r *fileRepo) UpdatePositions(ctx context.Context, businessType string, businessID uint, fileIDs []uint) error {
+	if len(fileIDs) == 0 {
+		return nil
+	}
+
+	db := r.getDB(ctx)
+	update := func(tx *gorm.DB) error {
+		return updatePositions(tx, businessType, businessID, fileIDs)
+	}
+	if db.DryRun {
+		return update(db)
+	}
+	return db.Transaction(update)
+}
+
+func updatePositions(tx *gorm.DB, businessType string, businessID uint, fileIDs []uint) error {
+	caseParts := make([]string, 0, len(fileIDs))
+	caseArgs := make([]interface{}, 0, len(fileIDs)*2)
+	for position, id := range fileIDs {
+		caseParts = append(caseParts, "WHEN ? THEN ?")
+		caseArgs = append(caseArgs, id, position)
+	}
+
+	result := tx.Model(&FileAttachment{}).
+		Where("business_type = ? AND business_id = ?", businessType, businessID).
+		Where("id IN ?", fileIDs).
+		Update("position", gorm.Expr("CASE id "+strings.Join(caseParts, " ")+" ELSE position END", caseArgs...))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(fileIDs)) {
+		return fmt.Errorf("update attachment positions: affected %d rows, want %d", result.RowsAffected, len(fileIDs))
+	}
+	return nil
 }

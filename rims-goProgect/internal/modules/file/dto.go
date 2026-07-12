@@ -13,6 +13,12 @@ type ListFilesRequest struct {
 	PageSize     int    `form:"pageSize" binding:"omitempty,min=1,max=100"`
 }
 
+type ReorderRequest struct {
+	BusinessType string `json:"businessType" binding:"required,max=32"`
+	BusinessID   uint   `json:"businessId" binding:"required,min=1"`
+	FileIDs      []uint `json:"fileIds" binding:"required,min=1,dive,min=1"`
+}
+
 // FileResponse is the file attachment representation returned to clients.
 type FileResponse struct {
 	ID           uint      `json:"id"`
@@ -27,6 +33,7 @@ type FileResponse struct {
 	ObjectKey    string    `json:"objectKey,omitempty"` // admin-only
 	CreatedBy    uint      `json:"createdBy"`
 	CreatedAt    time.Time `json:"uploadedAt"`
+	Position     int       `json:"position"`
 }
 
 // ToFileResponse converts a FileAttachment model to a FileResponse.
@@ -44,6 +51,7 @@ func ToFileResponse(f *FileAttachment, includeObjectKey bool) FileResponse {
 		IsPublic:     f.IsPublic,
 		CreatedBy:    f.CreatedBy,
 		CreatedAt:    f.CreatedAt,
+		Position:     f.Position,
 	}
 	if includeObjectKey {
 		resp.ObjectKey = f.ObjectKey

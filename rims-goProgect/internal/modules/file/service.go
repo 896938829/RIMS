@@ -72,6 +72,21 @@ type bindingAttachmentCounter interface {
 	CountByBinding(ctx context.Context, businessType string, businessID uint) (int64, error)
 }
 
+type attachmentMutationRepository interface {
+	ListAllByBinding(ctx context.Context, businessType string, businessID uint) ([]FileAttachment, error)
+	MaxPositionByBinding(ctx context.Context, businessType string, businessID uint) (int, error)
+	UpdatePositions(ctx context.Context, businessType string, businessID uint, fileIDs []uint) error
+}
+
+type preparedFileObject struct {
+	objectKey    string
+	originalName string
+	content      []byte
+	size         int64
+	hash         string
+	mimeType     string
+}
+
 // NewFileService constructs a FileService.
 //
 //   - maxUploadMB: from cfg.MaxUploadMB (<=0 means no limit).
@@ -149,6 +164,7 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	}
 
 	isPublic := IsPublicBusinessType(businessType)
+	position := 0
 	if req.BusinessID != nil {
 		if err := s.authorizeBusinessBinding(ctx, actor, &FileAttachment{
 			BusinessType: businessType,
@@ -159,6 +175,13 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		}
 		if err := s.enforceAttachmentLimit(ctx, businessType, *req.BusinessID); err != nil {
 			return nil, err
+		}
+		if mutationRepo, ok := s.repo.(attachmentMutationRepository); ok {
+			maxPosition, err := mutationRepo.MaxPositionByBinding(ctx, businessType, *req.BusinessID)
+			if err != nil {
+				return nil, types.ErrSystem(err)
+			}
+			position = maxPosition + 1
 		}
 	}
 
@@ -219,6 +242,7 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		FileHash:     hash,
 		MimeType:     mimeType,
 		IsPublic:     isPublic,
+		Position:     position,
 	}
 	record.CreatedBy = actor.UserID
 	record.UpdatedBy = actor.UserID
@@ -244,6 +268,148 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	}
 
 	return record, nil
+}
+
+// Reorder applies one exact order to all attachments in a business binding.
+func (s *FileService) Reorder(ctx context.Context, actor FileActor, req ReorderRequest) ([]FileAttachment, error) {
+	businessType := strings.TrimSpace(req.BusinessType)
+	if !IsValidBusinessType(businessType) || req.BusinessID == 0 || len(req.FileIDs) == 0 {
+		return nil, types.ErrValidation("无效的附件排序请求")
+	}
+	seen := make(map[uint]struct{}, len(req.FileIDs))
+	for _, id := range req.FileIDs {
+		if id == 0 {
+			return nil, types.ErrValidation("文件ID无效")
+		}
+		if _, exists := seen[id]; exists {
+			return nil, types.ErrValidation("文件ID不能重复")
+		}
+		seen[id] = struct{}{}
+	}
+	repo, ok := s.repo.(attachmentMutationRepository)
+	if !ok {
+		return nil, types.ErrSystem(errors.New("file repository does not support reorder"))
+	}
+	files, err := repo.ListAllByBinding(ctx, businessType, req.BusinessID)
+	if err != nil {
+		return nil, types.ErrSystem(err)
+	}
+	if len(files) != len(req.FileIDs) {
+		return nil, types.ErrValidation("排序必须包含当前对象的全部附件")
+	}
+	byID := make(map[uint]FileAttachment, len(files))
+	for _, file := range files {
+		if !actor.IsAdmin && file.CreatedBy != actor.UserID {
+			return nil, types.ErrForbidden()
+		}
+		byID[file.ID] = file
+	}
+	ordered := make([]FileAttachment, len(req.FileIDs))
+	for index, id := range req.FileIDs {
+		file, exists := byID[id]
+		if !exists {
+			return nil, types.ErrValidation("排序包含不属于当前对象的附件")
+		}
+		file.Position = index
+		ordered[index] = file
+	}
+	if err := repo.UpdatePositions(ctx, businessType, req.BusinessID, req.FileIDs); err != nil {
+		return nil, types.ErrSystem(err)
+	}
+	return ordered, nil
+}
+
+// Replace swaps file bytes and mutable metadata while preserving attachment identity.
+func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req UploadRequest) (*FileAttachment, error) {
+	original, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !actor.IsAdmin && original.CreatedBy != actor.UserID {
+		return nil, types.ErrForbidden()
+	}
+	prepared, err := s.prepareFileObject(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.storage.Save(ctx, prepared.objectKey, bytes.NewReader(prepared.content)); err != nil {
+		return nil, types.ErrSystem(err)
+	}
+	replacement := *original
+	replacement.ObjectKey = prepared.objectKey
+	replacement.OriginalName = prepared.originalName
+	replacement.FileSize = prepared.size
+	replacement.FileHash = prepared.hash
+	replacement.MimeType = prepared.mimeType
+	replacement.UpdatedBy = actor.UserID
+	if replacement.IsPublic {
+		replacement.FileURL = s.storage.PublicURL(prepared.objectKey)
+	} else {
+		replacement.FileURL = fmt.Sprintf(s.downloadURLFormat, replacement.ID)
+	}
+	if err := s.repo.Update(ctx, &replacement); err != nil {
+		_ = s.storage.Delete(ctx, prepared.objectKey)
+		return nil, types.ErrSystem(err)
+	}
+	_ = s.storage.Delete(ctx, original.ObjectKey)
+	return &replacement, nil
+}
+
+func (s *FileService) prepareFileObject(ctx context.Context, req UploadRequest) (*preparedFileObject, error) {
+	originalName := strings.TrimSpace(req.OriginalName)
+	if originalName == "" {
+		return nil, types.ErrValidation("文件名不能为空")
+	}
+	ext := strings.ToLower(path.Ext(originalName))
+	if ext == "" || (len(s.allowedExt) > 0 && !s.allowedExt[ext]) {
+		return nil, types.ErrValidation(fmt.Sprintf("不允许的文件类型：%s", ext))
+	}
+	if req.Reader == nil {
+		return nil, types.ErrValidation("文件内容为空")
+	}
+	if s.maxSize > 0 && req.DeclaredSize > s.maxSize {
+		return nil, types.ErrValidation(fmt.Sprintf("文件超过大小限制 (%d MB)", s.maxSize/(1024*1024)))
+	}
+	var reader io.Reader = &contextReader{ctx: ctx, reader: req.Reader}
+	if s.maxSize > 0 {
+		reader = io.LimitReader(reader, s.maxSize+1)
+	}
+	hasher := sha256.New()
+	var buf bytes.Buffer
+	written, err := io.Copy(&buf, io.TeeReader(reader, hasher))
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, types.ErrSystem(ctx.Err())
+		}
+		return nil, types.ErrSystem(fmt.Errorf("read upload: %w", err))
+	}
+	if written == 0 {
+		return nil, types.ErrValidation("文件内容为空")
+	}
+	if s.maxSize > 0 && written > s.maxSize {
+		return nil, types.ErrValidation(fmt.Sprintf("文件超过大小限制 (%d MB)", s.maxSize/(1024*1024)))
+	}
+	sniffN := 512
+	if buf.Len() < sniffN {
+		sniffN = buf.Len()
+	}
+	mimeType := http.DetectContentType(buf.Bytes()[:sniffN])
+	if !mimeMatchesExtension(ext, mimeType) {
+		return nil, types.ErrValidation(fmt.Sprintf("文件内容与扩展名不匹配：%s", ext))
+	}
+	now := time.Now().UTC()
+	randHex, err := randomHex(16)
+	if err != nil {
+		return nil, types.ErrSystem(err)
+	}
+	return &preparedFileObject{
+		objectKey:    fmt.Sprintf("%04d/%02d/%s%s", now.Year(), int(now.Month()), randHex, ext),
+		originalName: originalName,
+		content:      append([]byte(nil), buf.Bytes()...),
+		size:         written,
+		hash:         hex.EncodeToString(hasher.Sum(nil)),
+		mimeType:     mimeType,
+	}, nil
 }
 
 func (s *FileService) enforceAttachmentLimit(ctx context.Context, businessType string, businessID uint) error {
@@ -322,26 +488,39 @@ func (s *FileService) List(ctx context.Context, filter ListFilter, page types.Pa
 	return types.NewPageResult(page, items, total), nil
 }
 
-// ListForRead returns the candidate page filtered by read authorization. Total
-// reflects the authorized items in the returned candidate set, not a DB-wide
-// filtered count.
+// ListForRead paginates after authorization so totals never describe hidden rows.
 func (s *FileService) ListForRead(ctx context.Context, filter ListFilter, page types.PageRequest, includeObjectKey bool, actor FileActor) (types.PageResult, error) {
-	list, _, err := s.repo.List(ctx, filter, page)
-	if err != nil {
-		return types.PageResult{}, types.ErrSystem(err)
-	}
-	items := make([]FileResponse, 0, len(list))
-	for i := range list {
-		if err := s.authorize(ctx, actor, &list[i], FileActionRead); err != nil {
-			var appErr *types.AppError
-			if errors.As(err, &appErr) && appErr.Code == types.ErrCodePermissionDenied {
-				continue
-			}
-			return types.PageResult{}, err
+	page.Defaults()
+	authorized := make([]FileResponse, 0)
+	const candidatePageSize = 100
+	for candidatePage := 1; ; candidatePage++ {
+		list, total, err := s.repo.List(ctx, filter, types.PageRequest{Page: candidatePage, PageSize: candidatePageSize})
+		if err != nil {
+			return types.PageResult{}, types.ErrSystem(err)
 		}
-		items = append(items, ToFileResponse(&list[i], includeObjectKey))
+		for i := range list {
+			if err := s.authorize(ctx, actor, &list[i], FileActionRead); err != nil {
+				var appErr *types.AppError
+				if errors.As(err, &appErr) && appErr.Code == types.ErrCodePermissionDenied {
+					continue
+				}
+				return types.PageResult{}, err
+			}
+			authorized = append(authorized, ToFileResponse(&list[i], includeObjectKey))
+		}
+		if int64(candidatePage*candidatePageSize) >= total || len(list) == 0 {
+			break
+		}
 	}
-	return types.NewPageResult(page, items, int64(len(items))), nil
+	start := page.Offset()
+	if start > len(authorized) {
+		start = len(authorized)
+	}
+	end := start + page.PageSize
+	if end > len(authorized) {
+		end = len(authorized)
+	}
+	return types.NewPageResult(page, authorized[start:end], int64(len(authorized))), nil
 }
 
 // Delete soft-deletes a file record. The underlying object is retained for

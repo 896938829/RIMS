@@ -17,6 +17,8 @@ func RegisterRoutes(
 	files.Use(authMw)
 	files.POST("/upload", idemMw, handler.Upload)
 	files.GET("", handler.List)
+	files.PUT("/reorder", handler.Reorder)
+	files.POST("/:id/replace", idemMw, handler.Replace)
 	files.GET("/:id", handler.Get)
 	files.GET("/:id/download", handler.Download)
 	files.DELETE("/:id", handler.Delete)

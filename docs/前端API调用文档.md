@@ -408,6 +408,8 @@ Token 通过登录接口获取，过期时间由服务端 `JWT_EXPIRE_HOURS` 配
 |---|---|---|---|
 | POST | `/files/upload` | auth | `multipart/form-data`: `file`(必填) + `businessType` + `businessId` |
 | GET | `/files` | auth | 列表，filter `businessType` / `businessId` |
+| PUT | `/files/reorder` | 上传者或 admin | 完整集合 `{businessType,businessId,fileIds}`，按数组顺序写入 position |
+| POST | `/files/:id/replace` | 上传者或 admin | `multipart/form-data` 的 `file`，需稳定 `Idempotency-Key`；保留 ID/binding/position/creator |
 | GET | `/files/:id` | auth | 元数据详情（admin 可见 `objectKey`） |
 | GET | `/files/:id/download` | auth | **私有文件仅上传者或 admin 可下载（403 其他）** |
 | DELETE | `/files/:id` | 上传者或 admin | 软删，对象保留 |
@@ -425,8 +427,10 @@ Token 通过登录接口获取，过期时间由服务端 `JWT_EXPIRE_HOURS` 配
 ### 8.2 限制
 
 - 服务端根据 `MAX_UPLOAD_MB` 拦截超大文件（默认 10MB）
+- 每个业务对象最多 `MAX_ATTACHMENTS_PER_OBJECT` 个附件（默认 9）
 - 扩展名白名单由 `ALLOWED_EXTS` 配置，非法返回 `10003`
-- MIME 通过前 512 字节嗅探，非扩展名驱动
+- MIME 通过前 512 字节嗅探，并与图片/PDF/CSV/XLSX 扩展名家族交叉校验
+- 本地对象通过同目录 owner-only 临时文件写入，完成 sync/close 后原子替换
 - SHA-256 作为 `fileHash` 写入元数据（暂未启用去重）
 
 ### 8.3 FileResponse
@@ -444,6 +448,7 @@ Token 通过登录接口获取，过期时间由服务端 `JWT_EXPIRE_HOURS` 配
   "isPublic": false,
   "objectKey": "2026/04/abc.pdf",      // admin-only
   "createdBy": 7,
+  "position": 0,
   "uploadedAt": "2026-04-17T06:00:00Z"
 }
 ```
@@ -515,7 +520,7 @@ Token 通过登录接口获取，过期时间由服务端 `JWT_EXPIRE_HOURS` 配
 - **POST /documents/:id/complete** 在事务内写审计，如审计落库失败整单回滚
 - **盘点单** `settle` 执行时若库存已变化或 `diffQty` 会导致负库存，返回 `20002`，需重新盘点后再结转
 - **退货单** 超退会按 `原数量 - 已退数量` 精确校验
-- **私有文件 ACL** 已在 handler 预检（非 uploader/admin 直接 403，不会开启流）
+- **私有文件 ACL** 由关联业务对象动态授权；replace/reorder 仅 uploader/admin，下载不会在拒绝后开启流
 - **审计时间窗** 与报表时间窗口一致，都是 366 天硬上限
 
 ---

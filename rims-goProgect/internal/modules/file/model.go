@@ -27,6 +27,7 @@ type FileAttachment struct {
 	FileHash     string `gorm:"size:64;not null;default:'';index"`
 	MimeType     string `gorm:"size:128;not null;default:''"`
 	IsPublic     bool   `gorm:"not null;default:false"`
+	Position     int    `gorm:"not null;default:0"`
 }
 
 // TableName overrides the default table name.

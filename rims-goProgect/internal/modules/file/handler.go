@@ -92,6 +92,57 @@ func (h *Handler) Upload(c *gin.Context) {
 	types.OKCreated(c, &resp)
 }
 
+// Reorder applies an exact attachment order for one business object.
+func (h *Handler) Reorder(c *gin.Context) {
+	var req ReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation(err.Error()))
+		return
+	}
+	files, err := h.svc.Reorder(c.Request.Context(), fileActorFromContext(c), req)
+	if err != nil {
+		types.FailFromError(c, err)
+		return
+	}
+	items := make([]FileResponse, len(files))
+	for index := range files {
+		items[index] = ToFileResponse(&files[index], types.IsAdmin(c))
+	}
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceFile, req.BusinessID, "调整附件顺序", map[string]any{"businessType": req.BusinessType, "businessID": req.BusinessID, "fileIDs": req.FileIDs})
+	types.OK(c, items)
+}
+
+// Replace swaps one attachment's bytes while preserving its identity.
+func (h *Handler) Replace(c *gin.Context) {
+	id, err := parseID(c, "id")
+	if err != nil {
+		return
+	}
+	fh, err := c.FormFile("file")
+	if err != nil {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation("未提供文件"))
+		return
+	}
+	f, err := fh.Open()
+	if err != nil {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation("文件读取失败"))
+		return
+	}
+	defer f.Close()
+	record, err := h.svc.Replace(c.Request.Context(), id, fileActorFromContext(c), UploadRequest{
+		OriginalName: fh.Filename,
+		Reader:       f,
+		DeclaredSize: fh.Size,
+	})
+	if err != nil {
+		types.FailFromError(c, err)
+		return
+	}
+	resp := ToFileResponse(record, types.IsAdmin(c))
+	h.auditSuccess(c, audit.ActionUpdate, audit.ResourceFile, record.ID, "替换附件", fileUploadAuditDetails(record))
+	types.OK(c, &resp)
+}
+
 // List godoc
 // @Summary 文件列表
 // @Tags 文件
