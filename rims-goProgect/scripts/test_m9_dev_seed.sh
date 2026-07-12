@@ -155,6 +155,13 @@ assert_eq "$(sql "SELECT count(*) FROM inventory_transactions WHERE doc_no LIKE 
 assert_eq "$(sql "SELECT count(*) FROM non_std_inventories WHERE temp_label LIKE 'M9-NS-%' AND deleted_at IS NULL")" "25" "fixture non-standard inventory"
 assert_eq "$(sql "SELECT i.quantity FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0001' AND w.code = 'WH001' AND i.deleted_at IS NULL")" "2" "WH001 M9-PAGE-0001 quantity"
 assert_eq "$(sql "SELECT i.quantity FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0001' AND w.code = 'M9-WH-02' AND i.deleted_at IS NULL")" "12" "M9-WH-02 M9-PAGE-0001 quantity"
+assert_eq "$(sql "SELECT barcode FROM products WHERE code = 'M9-PAGE-0001' AND deleted_at IS NULL")" "M10-ACTIVE-001" "M10 active barcode"
+assert_eq "$(sql "SELECT concat_ws('|', barcode, status) FROM products WHERE code = 'M9-PAGE-0002' AND deleted_at IS NULL")" "M10-DISABLED-001|0" "M10 disabled barcode"
+assert_eq "$(sql "SELECT barcode FROM products WHERE code = 'M9-PAGE-0003' AND deleted_at IS NULL")" "M10-WH001-ONLY-001" "M10 warehouse barcode"
+assert_eq "$(sql "SELECT i.status FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0003' AND w.code = 'WH001' AND i.deleted_at IS NULL")" "1" "M10 WH001 barcode inventory status"
+assert_eq "$(sql "SELECT i.status FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code = 'M9-PAGE-0003' AND w.code = 'M9-WH-02' AND i.deleted_at IS NULL")" "0" "M10 wrong-warehouse inventory status"
+assert_eq "$(sql "SELECT concat_ws('|', d.doc_no, w.code, d.remark) FROM documents d JOIN warehouses w ON w.id = d.warehouse_id WHERE d.doc_no = 'M9DOC0001' AND d.deleted_at IS NULL")" "M9DOC0001|WH001|M10 attachment target WH001" "M10 WH001 attachment document"
+assert_eq "$(sql "SELECT concat_ws('|', d.doc_no, w.code, d.remark) FROM documents d JOIN warehouses w ON w.id = d.warehouse_id WHERE d.doc_no = 'M9DOC0002' AND d.deleted_at IS NULL")" "M9DOC0002|M9-WH-02|M10 attachment target M9-WH-02" "M10 second-warehouse attachment document"
 
 for warehouse_code in WH001 M9-WH-02; do
 	assert_eq "$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id JOIN warehouses w ON w.id = i.warehouse_id WHERE p.code LIKE 'M9-PAGE-%' AND w.code = '${warehouse_code}' AND i.deleted_at IS NULL")" "45" "${warehouse_code} fixture inventory"

@@ -124,10 +124,16 @@ SELECT
     CASE WHEN n <= 15 THEN 'M9 食品' WHEN n <= 30 THEN 'M9 日用' ELSE 'M9 饮料' END,
     format('%s 件/箱', 6 + (n % 7)),
     '件',
-    format('6909000%s', to_char(n, 'FM000000')),
+    CASE n
+        WHEN 1 THEN 'M10-ACTIVE-001'
+        WHEN 2 THEN 'M10-DISABLED-001'
+        WHEN 3 THEN 'M10-WH001-ONLY-001'
+        WHEN 4 THEN 'M10-PRODUCT-IMAGE-001'
+        ELSE format('6909000%s', to_char(n, 'FM000000'))
+    END,
     (10 + n * 0.75)::DECIMAL(12, 2),
     (6 + n * 0.45)::DECIMAL(12, 2),
-    '', 1, 0, 0, NULL
+    '', CASE WHEN n = 2 THEN 0 ELSE 1 END, 0, 0, NULL
 FROM generate_series(1, 45) AS series(n)
 ON CONFLICT (code) DO UPDATE SET
     name = EXCLUDED.name,
@@ -147,7 +153,11 @@ WITH desired AS (
         w.id AS warehouse_id,
         p.id AS product_id,
         CASE WHEN n <= 5 THEN 2 + CASE WHEN w.code = 'M9-WH-02' THEN 10 ELSE 0 END ELSE 20 + n + CASE WHEN w.code = 'M9-WH-02' THEN 10 ELSE 0 END END AS quantity,
-        5 AS alert_threshold
+        5 AS alert_threshold,
+        CASE
+            WHEN n = 3 AND w.code = 'M9-WH-02' THEN 0
+            ELSE 1
+        END AS inventory_status
     FROM generate_series(1, 45) AS series(n)
     JOIN products AS p
       ON p.code = format('M9-PAGE-%s', to_char(n, 'FM0000'))
@@ -171,7 +181,7 @@ WITH desired AS (
     SET quantity = chosen.quantity,
         locked_qty = 0,
         alert_threshold = chosen.alert_threshold,
-        status = 1,
+        status = chosen.inventory_status,
         updated_by = 0,
         updated_at = NOW(),
         deleted_at = NULL
@@ -185,7 +195,7 @@ INSERT INTO inventories (
 )
 SELECT
     warehouse_id, product_id, quantity, 0, alert_threshold,
-    1, 0, 0, NOW(), NOW()
+    inventory_status, 0, 0, NOW(), NOW()
 FROM chosen
 WHERE existing_id IS NULL;
 
@@ -282,6 +292,11 @@ WITH desired AS (
         format('M9DOC%s', to_char(n, 'FM0000')) AS doc_no,
         CASE WHEN n % 2 = 0 THEN wh2.id ELSE wh1.id END AS warehouse_id,
         admin.id AS operator_id,
+        CASE n
+            WHEN 1 THEN 'M10 attachment target WH001'
+            WHEN 2 THEN 'M10 attachment target M9-WH-02'
+            ELSE 'M9 fixture read-only document'
+        END AS remark,
         n
     FROM generate_series(1, 15) AS series(n)
     CROSS JOIN LATERAL (
@@ -312,7 +327,7 @@ WITH desired AS (
         to_warehouse_id = 0,
         ref_doc_id = 0,
         ref_doc_no = '',
-        remark = 'M9 fixture read-only document',
+        remark = chosen.remark,
         operated_at = NOW() - ((16 - chosen.n) || ' days')::INTERVAL,
         updated_by = chosen.operator_id,
         updated_at = NOW(),
@@ -328,7 +343,7 @@ INSERT INTO documents (
 )
 SELECT
     doc_no, 2, 2, warehouse_id, 0,
-    0, '', 'M9 fixture read-only document',
+    0, '', remark,
     NOW() - ((16 - n) || ' days')::INTERVAL,
     operator_id, operator_id,
     NOW() - ((16 - n) || ' days')::INTERVAL,
