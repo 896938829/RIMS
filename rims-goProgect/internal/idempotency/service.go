@@ -134,7 +134,10 @@ func (s *Service) decisionForRecord(ctx context.Context, record *Record, request
 			return Decision{}, deleteErr
 		}
 		if err := s.createProcessing(ctx, record.UserID, record.Scope, record.IdempotencyKey, requestHash, now); err != nil {
-			return Decision{}, err
+			return s.beginExisting(
+				ctx, record.UserID, record.Scope, record.IdempotencyKey,
+				requestHash, err,
+			)
 		}
 		return Decision{Type: DecisionProceed}, nil
 	}

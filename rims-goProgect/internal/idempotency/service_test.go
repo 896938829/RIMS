@@ -417,6 +417,51 @@ func TestBeginExpiredDeleteLosesToConcurrentStatusLeaseAndReplays(t *testing.T) 
 	}
 }
 
+func TestConcurrentBeginReplacingExpiredRecordReturnsProceedAndProcessing(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := newExpiredBeginRaceRepository(now.Add(-time.Second))
+	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return now }
+
+	results := runConcurrentBegins(t, svc, "hash-1", "hash-1")
+
+	assertDecisionCounts(t, results, map[DecisionType]int{
+		DecisionProceed:    1,
+		DecisionProcessing: 1,
+	})
+	for _, result := range results {
+		if result.err != nil {
+			t.Fatalf("Begin() returned unexpected error: %v", result.err)
+		}
+	}
+}
+
+func TestConcurrentBeginReplacingExpiredRecordRejectsDifferentHashWithoutCreateError(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := newExpiredBeginRaceRepository(now.Add(-time.Second))
+	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return now }
+
+	results := runConcurrentBegins(t, svc, "hash-1", "hash-2")
+
+	proceed := 0
+	conflicts := 0
+	for _, result := range results {
+		if result.err == nil && result.decision.Type == DecisionProceed {
+			proceed++
+			continue
+		}
+		if errors.Is(result.err, ErrKeyReusedWithDifferentRequest) {
+			conflicts++
+			continue
+		}
+		t.Fatalf("Begin() result = %#v, want proceed or validation conflict", result)
+	}
+	if proceed != 1 || conflicts != 1 {
+		t.Fatalf("results = %#v, want one proceed and one validation conflict", results)
+	}
+}
+
 func TestCleanupExpiredDeleteLosesToConcurrentStatusLease(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
 	repo := newLeaseRaceRepository(&Record{
@@ -456,6 +501,138 @@ func TestCleanupExpiredDeleteLosesToConcurrentStatusLease(t *testing.T) {
 type beginCallResult struct {
 	decision Decision
 	err      error
+}
+
+func runConcurrentBegins(t *testing.T, svc *Service, hashes ...string) []beginCallResult {
+	t.Helper()
+	results := make(chan beginCallResult, len(hashes))
+	for _, hash := range hashes {
+		hash := hash
+		go func() {
+			decision, err := svc.Begin(
+				context.Background(), 7, "POST /api/v1/documents", "key-1", hash,
+			)
+			results <- beginCallResult{decision: decision, err: err}
+		}()
+	}
+
+	collected := make([]beginCallResult, 0, len(hashes))
+	for range hashes {
+		select {
+		case result := <-results:
+			collected = append(collected, result)
+		case <-time.After(time.Second):
+			t.Fatal("concurrent Begin calls did not finish")
+		}
+	}
+	return collected
+}
+
+func assertDecisionCounts(t *testing.T, results []beginCallResult, want map[DecisionType]int) {
+	t.Helper()
+	got := make(map[DecisionType]int)
+	for _, result := range results {
+		got[result.decision.Type]++
+	}
+	for decision, count := range want {
+		if got[decision] != count {
+			t.Fatalf("decision %v count = %d, want %d; results = %#v", decision, got[decision], count, results)
+		}
+	}
+}
+
+type expiredBeginRaceRepository struct {
+	mu              sync.Mutex
+	expired         Record
+	record          *Record
+	initialGets     int
+	bothInitialGets chan struct{}
+	createCalls     int
+	secondCreated   chan struct{}
+}
+
+func newExpiredBeginRaceRepository(expiresAt time.Time) *expiredBeginRaceRepository {
+	return &expiredBeginRaceRepository{
+		expired: Record{
+			UserID: 7, Scope: "POST /api/v1/documents", IdempotencyKey: "key-1",
+			RequestHash: "old-hash", State: StateCompleted, ExpiresAt: expiresAt,
+		},
+		bothInitialGets: make(chan struct{}),
+		secondCreated:   make(chan struct{}),
+	}
+}
+
+func (r *expiredBeginRaceRepository) Get(context.Context, uint, string, string) (*Record, error) {
+	r.mu.Lock()
+	r.initialGets++
+	initial := r.initialGets <= 2
+	if r.initialGets == 2 {
+		close(r.bothInitialGets)
+	}
+	if initial {
+		copy := r.expired
+		r.mu.Unlock()
+		<-r.bothInitialGets
+		return &copy, nil
+	}
+	if r.record == nil {
+		r.mu.Unlock()
+		return nil, ErrRecordNotFound
+	}
+	copy := *r.record
+	r.mu.Unlock()
+	return &copy, nil
+}
+
+func (r *expiredBeginRaceRepository) GetStatus(context.Context, uint, string, string) (*OperationStatus, error) {
+	return nil, ErrRecordNotFound
+}
+
+func (r *expiredBeginRaceRepository) ExtendCompletedReplayLease(
+	context.Context, uint, string, string, time.Time, time.Time, time.Time,
+) error {
+	return ErrRecordNotFound
+}
+
+func (r *expiredBeginRaceRepository) Create(_ context.Context, record *Record) error {
+	r.mu.Lock()
+	r.createCalls++
+	call := r.createCalls
+	if call == 2 {
+		copy := *record
+		r.record = &copy
+		close(r.secondCreated)
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
+	<-r.secondCreated
+	return errors.New("duplicate idempotency key")
+}
+
+func (r *expiredBeginRaceRepository) Complete(context.Context, uint, string, string, int, []byte) error {
+	return nil
+}
+
+func (r *expiredBeginRaceRepository) DeleteProcessing(context.Context, uint, string, string) error {
+	return nil
+}
+
+func (r *expiredBeginRaceRepository) DeleteExpired(
+	_ context.Context,
+	_ uint,
+	_, _, state, requestHash string,
+	expectedExpiresAt, now time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record != nil || r.expired.State != state || r.expired.RequestHash != requestHash ||
+		!r.expired.ExpiresAt.Equal(expectedExpiresAt) || r.expired.ExpiresAt.After(now) {
+		return ErrRecordNotFound
+	}
+	r.record = nil
+	r.expired.State = "deleted"
+	return nil
 }
 
 type leaseRaceRepository struct {
