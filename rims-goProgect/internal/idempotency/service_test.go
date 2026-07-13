@@ -12,11 +12,16 @@ import (
 )
 
 type fakeRepository struct {
-	record    *Record
-	getErrs   []error
-	createErr error
-	created   *Record
-	deleted   bool
+	record       *Record
+	status       *OperationStatus
+	getErrs      []error
+	statusErr    error
+	createErr    error
+	created      *Record
+	deleted      bool
+	statusUserID uint
+	statusScope  string
+	statusKey    string
 }
 
 func (r *fakeRepository) Get(ctx context.Context, userID uint, scope, key string) (*Record, error) {
@@ -41,6 +46,20 @@ func (r *fakeRepository) Create(ctx context.Context, record *Record) error {
 	r.created = &copy
 	r.record = &copy
 	return nil
+}
+
+func (r *fakeRepository) GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error) {
+	r.statusUserID = userID
+	r.statusScope = scope
+	r.statusKey = key
+	if r.statusErr != nil {
+		return nil, r.statusErr
+	}
+	if r.status == nil {
+		return nil, ErrRecordNotFound
+	}
+	copy := *r.status
+	return &copy, nil
 }
 
 func (r *fakeRepository) Complete(ctx context.Context, userID uint, scope, key string, statusCode int, responseBody []byte) error {
@@ -229,5 +248,66 @@ func TestBeginReturnsCreateErrorWithFallbackGetErrorWhenRaceRecoveryFails(t *tes
 	}
 	if !strings.Contains(err.Error(), getErr.Error()) {
 		t.Fatalf("error = %v, want fallback get error %v in message", err, getErr)
+	}
+}
+
+func TestStatusUsesCurrentUserScopeAndKey(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour)
+	repo := &fakeRepository{status: &OperationStatus{
+		State:      StateProcessing,
+		StatusCode: 0,
+		ExpiresAt:  expiresAt,
+	}}
+	svc := NewService(repo, time.Hour)
+
+	status, err := svc.Status(context.Background(), 17, "POST /api/v1/documents/:id/complete", "key-1")
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if repo.statusUserID != 17 || repo.statusScope != "POST /api/v1/documents/:id/complete" || repo.statusKey != "key-1" {
+		t.Fatalf("lookup = user %d scope %q key %q", repo.statusUserID, repo.statusScope, repo.statusKey)
+	}
+	if status.State != StateProcessing || status.StatusCode != 0 || !status.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestStatusReturnsCompletedMetadataWithoutStoredRequestOrResponse(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour)
+	repo := &fakeRepository{status: &OperationStatus{
+		State:      StateCompleted,
+		StatusCode: 201,
+		ExpiresAt:  expiresAt,
+	}}
+	svc := NewService(repo, time.Hour)
+
+	status, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "key-1")
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if status.State != StateCompleted || status.StatusCode != 201 || !status.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestStatusReturnsNotFoundForMissingRecord(t *testing.T) {
+	svc := NewService(&fakeRepository{}, time.Hour)
+
+	_, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "missing")
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("error = %v, want ErrRecordNotFound", err)
+	}
+}
+
+func TestStatusReturnsNotFoundForExpiredRecord(t *testing.T) {
+	svc := NewService(&fakeRepository{status: &OperationStatus{
+		State:      StateCompleted,
+		StatusCode: 201,
+		ExpiresAt:  time.Now().Add(-time.Second),
+	}}, time.Hour)
+
+	_, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "expired")
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("error = %v, want ErrRecordNotFound", err)
 	}
 }

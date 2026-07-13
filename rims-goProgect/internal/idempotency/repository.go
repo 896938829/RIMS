@@ -18,10 +18,27 @@ var ErrNoProcessingRecord = errors.New("idempotency processing record not found"
 // Repository defines idempotency key persistence operations.
 type Repository interface {
 	Get(ctx context.Context, userID uint, scope, key string) (*Record, error)
+	GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error)
 	Create(ctx context.Context, record *Record) error
 	Complete(ctx context.Context, userID uint, scope, key string, statusCode int, responseBody []byte) error
 	DeleteProcessing(ctx context.Context, userID uint, scope, key string) error
 	Delete(ctx context.Context, userID uint, scope, key string) error
+}
+
+func (r *repository) GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error) {
+	var status OperationStatus
+	err := r.getDB(ctx).
+		Model(&Record{}).
+		Select("state", "status_code", "expires_at").
+		Where("user_id = ? AND scope = ? AND idempotency_key = ?", userID, scope, key).
+		First(&status).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrRecordNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &status, nil
 }
 
 type repository struct {

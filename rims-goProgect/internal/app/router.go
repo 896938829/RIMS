@@ -76,6 +76,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	// Idempotency middleware for selected unsafe write endpoints.
 	idemRepo := idempotency.NewRepository(gormDB)
 	idemSvc := idempotency.NewService(idemRepo, idempotencyTTLFromConfig(cfg))
+	idemHandler := idempotency.NewHandler(idemSvc)
 	idemMw := middleware.Idempotency(idemSvc, cfg.MaxUploadMB)
 
 	// Product module
@@ -134,6 +135,7 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 
 	// API v1
 	api := r.Group("/api/v1")
+	idempotency.RegisterRoutes(api, idemHandler, authMw)
 	user.RegisterRoutes(api, userHandler, authMw, permMw)
 	warehouse.RegisterRoutes(api, warehouseHandler, authMw, permMw)
 	product.RegisterRoutes(api, productHandler, authMw, whScope, idemMw, permMw)

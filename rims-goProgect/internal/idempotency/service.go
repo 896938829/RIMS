@@ -31,6 +31,13 @@ type Decision struct {
 	ResponseBody []byte
 }
 
+// OperationStatus is the safe, public view of an idempotency record.
+type OperationStatus struct {
+	State      string    `json:"state"`
+	StatusCode int       `json:"status_code"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
 // Service coordinates idempotency key state transitions.
 type Service struct {
 	repo Repository
@@ -126,4 +133,16 @@ func (s *Service) Complete(ctx context.Context, userID uint, scope, key string, 
 // Release deletes an in-flight key so failed requests can be retried.
 func (s *Service) Release(ctx context.Context, userID uint, scope, key string) error {
 	return s.repo.DeleteProcessing(ctx, userID, scope, key)
+}
+
+// Status returns safe metadata for an unexpired idempotency record.
+func (s *Service) Status(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error) {
+	status, err := s.repo.GetStatus(ctx, userID, scope, key)
+	if err != nil {
+		return nil, err
+	}
+	if !status.ExpiresAt.IsZero() && !status.ExpiresAt.After(time.Now()) {
+		return nil, ErrRecordNotFound
+	}
+	return status, nil
 }
