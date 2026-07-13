@@ -3,7 +3,11 @@
 
 package document
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+
+	"rims-go/internal/idempotency"
+)
 
 // RegisterRoutes registers all document and inventory transaction routes.
 func RegisterRoutes(
@@ -12,12 +16,14 @@ func RegisterRoutes(
 	authMw, whScope, idemMw gin.HandlerFunc,
 ) {
 	// Documents (warehouse-scoped)
-	docs := rg.Group("/documents")
+	createRoute := idempotency.RegisteredMutationRoute(idempotency.CreateDocumentMutation)
+	completeRoute := idempotency.RegisteredMutationRoute(idempotency.CompleteDocumentMutation)
+	docs := rg.Group(createRoute.GroupPath)
 	docs.Use(authMw, whScope)
-	docs.POST("", idemMw, handler.CreateDocument)
+	docs.Handle(createRoute.Method, createRoute.Path, idemMw, handler.CreateDocument)
 	docs.GET("", handler.ListDocuments)
 	docs.GET("/:id", handler.GetDocument)
-	docs.POST("/:id/complete", idemMw, handler.CompleteDocument)
+	docs.Handle(completeRoute.Method, completeRoute.Path, idemMw, handler.CompleteDocument)
 	docs.POST("/:id/confirm", handler.ConfirmStocktake)
 	docs.POST("/:id/settle", handler.SettleStocktake)
 

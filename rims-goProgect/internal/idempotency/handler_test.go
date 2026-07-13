@@ -66,6 +66,92 @@ func TestHandlerRejectsScopeOutsideRegisteredIdempotentMutations(t *testing.T) {
 	}
 }
 
+func TestRegisteredMutationScopeContractAndStatusRoutes(t *testing.T) {
+	expected := map[string]bool{
+		"POST /api/v1/documents":                     false,
+		"POST /api/v1/documents/:id/complete":        false,
+		"POST /api/v1/files/upload":                  false,
+		"POST /api/v1/files/:id/replace":             false,
+		"POST /api/v1/non-std-inventory/:id/convert": false,
+	}
+	routes := RegisteredMutationRoutes()
+	if len(routes) != len(expected) {
+		t.Fatalf("registered routes = %d, want %d", len(routes), len(expected))
+	}
+
+	for _, route := range routes {
+		scope := route.Scope()
+		if _, ok := expected[scope]; !ok {
+			t.Fatalf("unexpected registered scope %q", scope)
+		}
+		expected[scope] = true
+
+		svc := &statusServiceStub{status: &OperationStatus{
+			State:     StateProcessing,
+			ExpiresAt: time.Now().Add(time.Hour),
+		}}
+		response := performStatusRequest(statusTestRouter(svc, 7), "key-1", scope, "")
+		if response.Code != http.StatusOK || svc.scope != scope {
+			t.Fatalf("scope %q status/service scope = %d/%q; body = %s", scope, response.Code, svc.scope, response.Body.String())
+		}
+	}
+
+	for scope, seen := range expected {
+		if !seen {
+			t.Fatalf("required scope %q is not registered", scope)
+		}
+	}
+}
+
+func TestHandlerRejectsInvalidKeysThroughRealGinRoute(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "empty", key: ""},
+		{name: "unicode", key: "幂等键"},
+		{name: "encoded slash", key: "draft/key"},
+		{name: "too long", key: strings.Repeat("a", 256)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &statusServiceStub{}
+			router := statusTestRouter(svc, 7)
+
+			response := performStatusRequest(router, tt.key, "POST /api/v1/documents", "")
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if svc.calls != 0 {
+				t.Fatalf("service calls = %d, want 0", svc.calls)
+			}
+			if !strings.Contains(response.Body.String(), `"code":10003`) {
+				t.Fatalf("response is not a validation envelope: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerAcceptsBoundaryAndSpecialURLSafeKeys(t *testing.T) {
+	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-"} {
+		t.Run(key[:min(len(key), 16)], func(t *testing.T) {
+			svc := &statusServiceStub{status: &OperationStatus{
+				State:     StateProcessing,
+				ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			router := statusTestRouter(svc, 7)
+
+			response := performStatusRequest(router, key, "POST /api/v1/documents", "")
+
+			if response.Code != http.StatusOK || svc.key != key {
+				t.Fatalf("status/key = %d/%q, want 200/%q; body = %s", response.Code, svc.key, key, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandlerReturnsNotFoundForAbsentOperation(t *testing.T) {
 	svc := &statusServiceStub{err: ErrRecordNotFound}
 	router := statusTestRouter(svc, 7)
@@ -130,6 +216,7 @@ func TestHandlerReturnsCompletedStatusWithoutSensitiveFields(t *testing.T) {
 func statusTestRouter(service StatusService, userID uint) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	router.UseRawPath = true
 	api := router.Group("/api/v1")
 	RegisterRoutes(api, NewHandler(service), func(c *gin.Context) {
 		c.Set(types.CtxKeyUserID, userID)
@@ -139,7 +226,11 @@ func statusTestRouter(service StatusService, userID uint) *gin.Engine {
 }
 
 func performStatusRequest(router http.Handler, key, scope, suffix string) *httptest.ResponseRecorder {
-	path := "/api/v1/operations/idempotency/" + url.PathEscape(key) + "?scope=" + url.QueryEscape(scope) + suffix
+	path := "/api/v1/operations/idempotency"
+	if key != "" {
+		path += "/" + url.PathEscape(key)
+	}
+	path += "?scope=" + url.QueryEscape(scope) + suffix
 	request := httptest.NewRequest(http.MethodGet, path, nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)

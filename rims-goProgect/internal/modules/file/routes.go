@@ -3,7 +3,11 @@
 
 package file
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+
+	"rims-go/internal/idempotency"
+)
 
 // RegisterRoutes registers all file attachment routes. Files are not
 // warehouse-scoped; the business_id reference already carries scope via the
@@ -13,12 +17,14 @@ func RegisterRoutes(
 	handler *Handler,
 	authMw, idemMw gin.HandlerFunc,
 ) {
-	files := rg.Group("/files")
+	uploadRoute := idempotency.RegisteredMutationRoute(idempotency.UploadFileMutation)
+	replaceRoute := idempotency.RegisteredMutationRoute(idempotency.ReplaceFileMutation)
+	files := rg.Group(uploadRoute.GroupPath)
 	files.Use(authMw)
-	files.POST("/upload", idemMw, handler.Upload)
+	files.Handle(uploadRoute.Method, uploadRoute.Path, idemMw, handler.Upload)
 	files.GET("", handler.List)
 	files.PUT("/reorder", handler.Reorder)
-	files.POST("/:id/replace", idemMw, handler.Replace)
+	files.Handle(replaceRoute.Method, replaceRoute.Path, idemMw, handler.Replace)
 	files.GET("/:id", handler.Get)
 	files.GET("/:id/download", handler.Download)
 	files.DELETE("/:id", handler.Delete)

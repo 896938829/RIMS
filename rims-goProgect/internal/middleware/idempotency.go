@@ -34,9 +34,15 @@ type IdempotencyService interface {
 // Idempotency guards selected unsafe endpoints against duplicate submissions.
 func Idempotency(service IdempotencyService, maxUploadMB int) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		_, hasKeyHeader := c.Request.Header[http.CanonicalHeaderKey("Idempotency-Key")]
 		key := c.GetHeader("Idempotency-Key")
-		if key == "" {
+		if !hasKeyHeader {
 			c.Next()
+			return
+		}
+		if err := idempotency.ValidateKey(key); err != nil {
+			types.Fail(c, http.StatusBadRequest, types.ErrValidation("无效的幂等键"))
+			c.Abort()
 			return
 		}
 

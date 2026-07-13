@@ -34,6 +34,7 @@ import (
 // buildRouter creates the Gin engine with all middleware and routes.
 func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	r := gin.New()
+	r.UseRawPath = true
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())

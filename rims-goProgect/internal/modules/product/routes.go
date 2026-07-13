@@ -3,7 +3,11 @@
 
 package product
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+
+	"rims-go/internal/idempotency"
+)
 
 // RegisterRoutes registers all product, inventory, and non-standard inventory routes.
 func RegisterRoutes(
@@ -32,12 +36,13 @@ func RegisterRoutes(
 	inventory.PUT("/:id", perm("inventory:update"), handler.UpdateInventory)
 
 	// Non-standard inventory (warehouse-scoped, permission-protected)
-	nonStd := rg.Group("/non-std-inventory")
+	convertRoute := idempotency.RegisteredMutationRoute(idempotency.ConvertNonStandardInventoryMutation)
+	nonStd := rg.Group(convertRoute.GroupPath)
 	nonStd.Use(authMw, whScope)
 	nonStd.POST("", perm("non_std:create"), handler.CreateNonStd)
 	nonStd.GET("", perm("non_std:read"), handler.ListNonStd)
 	nonStd.GET("/:id", perm("non_std:read"), handler.GetNonStd)
 	nonStd.PUT("/:id", perm("non_std:update"), handler.UpdateNonStd)
 	nonStd.DELETE("/:id", perm("non_std:delete"), handler.DeleteNonStd)
-	nonStd.POST("/:id/convert", perm("non_std:convert"), idemMw, handler.ConvertNonStd)
+	nonStd.Handle(convertRoute.Method, convertRoute.Path, perm("non_std:convert"), idemMw, handler.ConvertNonStd)
 }

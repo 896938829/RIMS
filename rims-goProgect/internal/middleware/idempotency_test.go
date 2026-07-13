@@ -178,6 +178,77 @@ func TestIdempotencyPassesThroughWithoutHeader(t *testing.T) {
 	}
 }
 
+func TestIdempotencyRejectsInvalidHeaderKeysBeforeServiceOrHandler(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "empty", key: ""},
+		{name: "unicode", key: "幂等键"},
+		{name: "slash", key: "draft/key"},
+		{name: "space", key: "draft key"},
+		{name: "too long", key: strings.Repeat("a", 256)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calledBegin := false
+			calledHandler := false
+			svc := &fakeIdempotencyService{
+				beginFunc: func(ctx context.Context, userID uint, scope, key, requestHash string) (idempotency.Decision, error) {
+					calledBegin = true
+					return idempotency.Decision{Type: idempotency.DecisionProceed}, nil
+				},
+			}
+			router := newIdempotencyTestRouter(svc, func(c *gin.Context) {
+				calledHandler = true
+				c.JSON(http.StatusCreated, gin.H{"ok": true})
+			})
+
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/documents", nil)
+			request.Header["Idempotency-Key"] = []string{tt.key}
+			router.ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if calledBegin || calledHandler {
+				t.Fatalf("called Begin/handler = %v/%v, want false/false", calledBegin, calledHandler)
+			}
+			if !strings.Contains(response.Body.String(), `"code":10003`) {
+				t.Fatalf("response is not a validation envelope: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestIdempotencyAcceptsBoundaryAndSpecialURLSafeHeaderKeys(t *testing.T) {
+	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-"} {
+		t.Run(key[:min(len(key), 16)], func(t *testing.T) {
+			seenKey := ""
+			svc := &fakeIdempotencyService{
+				beginFunc: func(ctx context.Context, userID uint, scope, key, requestHash string) (idempotency.Decision, error) {
+					seenKey = key
+					return idempotency.Decision{Type: idempotency.DecisionProceed}, nil
+				},
+			}
+			router := newIdempotencyTestRouter(svc, func(c *gin.Context) {
+				c.JSON(http.StatusCreated, gin.H{"ok": true})
+			})
+
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/documents", nil)
+			request.Header.Set("Idempotency-Key", key)
+			router.ServeHTTP(response, request)
+
+			if response.Code != http.StatusCreated || seenKey != key {
+				t.Fatalf("status/key = %d/%q, want 201/%q", response.Code, seenKey, key)
+			}
+		})
+	}
+}
+
 func TestIdempotencyCachesSuccessfulResponse(t *testing.T) {
 	var completedStatus int
 	var completedBody string

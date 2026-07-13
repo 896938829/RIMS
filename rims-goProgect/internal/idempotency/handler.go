@@ -30,6 +30,12 @@ func NewHandler(service StatusService) *Handler {
 
 // GetStatus handles GET /operations/idempotency/:key.
 func (h *Handler) GetStatus(c *gin.Context) {
+	key := c.Param("key")
+	if err := ValidateKey(key); err != nil {
+		types.Fail(c, http.StatusBadRequest, types.ErrValidation("无效的幂等键"))
+		return
+	}
+
 	scope := c.Query("scope")
 	if !isAllowedMutationScope(scope) {
 		types.Fail(c, http.StatusBadRequest, types.ErrValidation("无效的幂等操作范围"))
@@ -40,7 +46,7 @@ func (h *Handler) GetStatus(c *gin.Context) {
 		c.Request.Context(),
 		types.GetUserID(c),
 		scope,
-		c.Param("key"),
+		key,
 	)
 	if errors.Is(err, ErrRecordNotFound) {
 		types.Fail(c, http.StatusNotFound, types.ErrNotFound("幂等操作"))
