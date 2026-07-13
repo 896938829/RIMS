@@ -20,24 +20,24 @@ var ErrNoProcessingRecord = errors.New("idempotency processing record not found"
 type Repository interface {
 	Get(ctx context.Context, userID uint, scope, key string) (*Record, error)
 	GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error)
-	ExtendCompletedReplayLease(ctx context.Context, userID uint, scope, key string, now, leaseUntil time.Time) error
+	ExtendCompletedReplayLease(ctx context.Context, userID uint, scope, key string, now, expectedExpiresAt, leaseUntil time.Time) error
 	Create(ctx context.Context, record *Record) error
 	Complete(ctx context.Context, userID uint, scope, key string, statusCode int, responseBody []byte) error
 	DeleteProcessing(ctx context.Context, userID uint, scope, key string) error
-	Delete(ctx context.Context, userID uint, scope, key string) error
+	DeleteExpired(ctx context.Context, userID uint, scope, key, state, requestHash string, expectedExpiresAt, now time.Time) error
 }
 
 func (r *repository) ExtendCompletedReplayLease(
 	ctx context.Context,
 	userID uint,
 	scope, key string,
-	now, leaseUntil time.Time,
+	now, expectedExpiresAt, leaseUntil time.Time,
 ) error {
 	result := r.getDB(ctx).
 		Model(&Record{}).
 		Where(
-			"user_id = ? AND scope = ? AND idempotency_key = ? AND state = ? AND expires_at > ?",
-			userID, scope, key, StateCompleted, now,
+			"user_id = ? AND scope = ? AND idempotency_key = ? AND state = ? AND expires_at = ? AND expires_at > ?",
+			userID, scope, key, StateCompleted, expectedExpiresAt, now,
 		).
 		UpdateColumn("expires_at", leaseUntil)
 	if result.Error != nil {
@@ -127,9 +127,17 @@ func (r *repository) DeleteProcessing(ctx context.Context, userID uint, scope, k
 	return nil
 }
 
-func (r *repository) Delete(ctx context.Context, userID uint, scope, key string) error {
+func (r *repository) DeleteExpired(
+	ctx context.Context,
+	userID uint,
+	scope, key, state, requestHash string,
+	expectedExpiresAt, now time.Time,
+) error {
 	result := r.getDB(ctx).
-		Where("user_id = ? AND scope = ? AND idempotency_key = ?", userID, scope, key).
+		Where(
+			"user_id = ? AND scope = ? AND idempotency_key = ? AND state = ? AND request_hash = ? AND expires_at = ? AND expires_at <= ?",
+			userID, scope, key, state, requestHash, expectedExpiresAt, now,
+		).
 		Delete(&Record{})
 	if result.Error != nil {
 		return result.Error

@@ -105,8 +105,33 @@ func (s *Service) createProcessing(ctx context.Context, userID uint, scope, key,
 
 func (s *Service) decisionForRecord(ctx context.Context, record *Record, requestHash string, now time.Time) (Decision, error) {
 	if !record.ExpiresAt.IsZero() && !record.ExpiresAt.After(now) {
-		if err := s.repo.Delete(ctx, record.UserID, record.Scope, record.IdempotencyKey); err != nil {
-			return Decision{}, err
+		deleteErr := s.repo.DeleteExpired(
+			ctx, record.UserID, record.Scope, record.IdempotencyKey,
+			record.State, record.RequestHash, record.ExpiresAt, now,
+		)
+		if errors.Is(deleteErr, ErrRecordNotFound) {
+			refreshed, getErr := s.repo.Get(
+				ctx, record.UserID, record.Scope, record.IdempotencyKey,
+			)
+			if errors.Is(getErr, ErrRecordNotFound) {
+				if createErr := s.createProcessing(
+					ctx, record.UserID, record.Scope, record.IdempotencyKey,
+					requestHash, s.now(),
+				); createErr != nil {
+					return s.beginExisting(
+						ctx, record.UserID, record.Scope, record.IdempotencyKey,
+						requestHash, createErr,
+					)
+				}
+				return Decision{Type: DecisionProceed}, nil
+			}
+			if getErr != nil {
+				return Decision{}, getErr
+			}
+			return s.decisionForRecord(ctx, refreshed, requestHash, s.now())
+		}
+		if deleteErr != nil {
+			return Decision{}, deleteErr
 		}
 		if err := s.createProcessing(ctx, record.UserID, record.Scope, record.IdempotencyKey, requestHash, now); err != nil {
 			return Decision{}, err
@@ -162,9 +187,19 @@ func (s *Service) Status(ctx context.Context, userID uint, scope, key string) (*
 			leaseUntil = status.ExpiresAt
 		}
 		if err := s.repo.ExtendCompletedReplayLease(
-			ctx, userID, scope, key, now, leaseUntil,
+			ctx, userID, scope, key, now, status.ExpiresAt, leaseUntil,
 		); err != nil {
-			return nil, err
+			if !errors.Is(err, ErrRecordNotFound) {
+				return nil, err
+			}
+			refreshed, getErr := s.repo.GetStatus(ctx, userID, scope, key)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if !refreshed.ExpiresAt.IsZero() && !refreshed.ExpiresAt.After(now) {
+				return nil, ErrRecordNotFound
+			}
+			return refreshed, nil
 		}
 		status.ExpiresAt = leaseUntil
 	}

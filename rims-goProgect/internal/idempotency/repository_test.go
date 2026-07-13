@@ -107,7 +107,7 @@ func TestRepositoryReplayLeaseUsesAtomicCompletedAndUnexpiredCAS(t *testing.T) {
 	leaseUntil := now.Add(2 * time.Minute)
 
 	err = repo.ExtendCompletedReplayLease(
-		context.Background(), 7, "POST /api/v1/documents", "key-1", now, leaseUntil,
+		context.Background(), 7, "POST /api/v1/documents", "key-1", now, now.Add(time.Second), leaseUntil,
 	)
 	if !errors.Is(err, ErrRecordNotFound) {
 		t.Fatalf("error = %v, want ErrRecordNotFound for lost CAS", err)
@@ -116,6 +116,33 @@ func TestRepositoryReplayLeaseUsesAtomicCompletedAndUnexpiredCAS(t *testing.T) {
 	for _, required := range []string{"state", "expires_at >", "user_id", "scope", "idempotency_key"} {
 		if !strings.Contains(sqlText, required) {
 			t.Fatalf("lease SQL = %q, want condition %q", pool.query, required)
+		}
+	}
+}
+
+func TestRepositoryExpiredDeleteUsesReadSnapshotCAS(t *testing.T) {
+	pool := &captureExecPool{}
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: pool}), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open fake gorm db: %v", err)
+	}
+	repo := NewRepository(gormDB)
+	expiresAt := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+
+	err = repo.DeleteExpired(
+		context.Background(), 7, "POST /documents", "key-1", StateCompleted,
+		"hash-1", expiresAt, expiresAt,
+	)
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("error = %v, want ErrRecordNotFound for lost CAS", err)
+	}
+	sqlText := strings.ToLower(pool.query)
+	for _, required := range []string{
+		"user_id", "scope", "idempotency_key", "state", "request_hash",
+		"expires_at =", "expires_at <=",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("delete SQL = %q, want condition %q", pool.query, required)
 		}
 	}
 }

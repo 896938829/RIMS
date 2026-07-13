@@ -7,34 +7,40 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeRepository struct {
-	record         *Record
-	status         *OperationStatus
-	getErrs        []error
-	statusErr      error
-	createErr      error
-	created        *Record
-	deleted        bool
-	statusUserID   uint
-	statusScope    string
-	statusKey      string
-	extendLeaseErr error
-	extendedFrom   time.Time
-	extendedUntil  time.Time
+	record               *Record
+	status               *OperationStatus
+	getErrs              []error
+	statusErr            error
+	createErr            error
+	created              *Record
+	deleted              bool
+	statusUserID         uint
+	statusScope          string
+	statusKey            string
+	extendLeaseErr       error
+	clearOnExtendFailure bool
+	extendedFrom         time.Time
+	extendedUntil        time.Time
 }
 
 func (r *fakeRepository) ExtendCompletedReplayLease(
 	ctx context.Context,
 	userID uint,
 	scope, key string,
-	now, leaseUntil time.Time,
+	now, expectedExpiresAt, leaseUntil time.Time,
 ) error {
 	r.extendedFrom = now
 	r.extendedUntil = leaseUntil
+	if r.extendLeaseErr != nil && r.clearOnExtendFailure {
+		r.status = nil
+		r.record = nil
+	}
 	if r.extendLeaseErr == nil {
 		if r.status != nil {
 			r.status.ExpiresAt = leaseUntil
@@ -93,6 +99,17 @@ func (r *fakeRepository) DeleteProcessing(ctx context.Context, userID uint, scop
 }
 
 func (r *fakeRepository) Delete(ctx context.Context, userID uint, scope, key string) error {
+	r.deleted = true
+	r.record = nil
+	return nil
+}
+
+func (r *fakeRepository) DeleteExpired(
+	ctx context.Context,
+	userID uint,
+	scope, key, state, requestHash string,
+	expectedExpiresAt, now time.Time,
+) error {
 	r.deleted = true
 	r.record = nil
 	return nil
@@ -325,7 +342,8 @@ func TestStatusDoesNotReturnCompletedWhenReplayLeaseCASLosesCleanupRace(t *testi
 		status: &OperationStatus{
 			State: StateCompleted, StatusCode: 201, ExpiresAt: now.Add(time.Millisecond),
 		},
-		extendLeaseErr: ErrRecordNotFound,
+		extendLeaseErr:       ErrRecordNotFound,
+		clearOnExtendFailure: true,
 	}
 	svc := NewService(repo, time.Hour)
 	svc.now = func() time.Time { return now }
@@ -352,6 +370,210 @@ func TestStatusBoundsCompletedReplayLease(t *testing.T) {
 	if status.ExpiresAt.After(now.Add(maxReplayLease)) {
 		t.Fatalf("lease expiry = %s, exceeds max %s", status.ExpiresAt, now.Add(maxReplayLease))
 	}
+}
+
+func TestBeginExpiredDeleteLosesToConcurrentStatusLeaseAndReplays(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := newLeaseRaceRepository(&Record{
+		UserID: 7, Scope: "POST /api/v1/documents", IdempotencyKey: "key-1",
+		RequestHash: "hash-1", State: StateCompleted, StatusCode: 201,
+		ResponseBody: []byte(`{"code":0}`), ExpiresAt: expiresAt,
+	})
+	beginService := NewService(repo, time.Hour)
+	beginService.now = func() time.Time { return expiresAt }
+	statusService := NewService(repo, time.Hour)
+	statusService.now = func() time.Time { return expiresAt.Add(-time.Millisecond) }
+
+	beginResult := make(chan beginCallResult, 1)
+	go func() {
+		decision, err := beginService.Begin(
+			context.Background(), 7, "POST /api/v1/documents", "key-1", "hash-1",
+		)
+		beginResult <- beginCallResult{decision: decision, err: err}
+	}()
+	<-repo.deleteEntered
+
+	statusResult := make(chan error, 1)
+	go func() {
+		_, err := statusService.Status(
+			context.Background(), 7, "POST /api/v1/documents", "key-1",
+		)
+		statusResult <- err
+	}()
+	if err := <-statusResult; err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	close(repo.allowDelete)
+
+	result := <-beginResult
+	if result.err != nil {
+		t.Fatalf("Begin() error = %v", result.err)
+	}
+	if result.decision.Type != DecisionReplay {
+		t.Fatalf("Begin() decision = %v, want replay", result.decision.Type)
+	}
+	if repo.createCalls != 0 {
+		t.Fatalf("Create() calls = %d, want 0", repo.createCalls)
+	}
+}
+
+func TestCleanupExpiredDeleteLosesToConcurrentStatusLease(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := newLeaseRaceRepository(&Record{
+		UserID: 7, Scope: "POST /api/v1/documents", IdempotencyKey: "key-1",
+		RequestHash: "hash-1", State: StateCompleted, StatusCode: 201,
+		ResponseBody: []byte(`{"code":0}`), ExpiresAt: expiresAt,
+	})
+	statusService := NewService(repo, time.Hour)
+	statusService.now = func() time.Time { return expiresAt.Add(-time.Millisecond) }
+
+	cleanupResult := make(chan bool, 1)
+	go func() {
+		cleanupResult <- repo.cleanupExpired(expiresAt.Add(time.Millisecond))
+	}()
+	<-repo.cleanupEntered
+
+	statusResult := make(chan error, 1)
+	go func() {
+		_, err := statusService.Status(
+			context.Background(), 7, "POST /api/v1/documents", "key-1",
+		)
+		statusResult <- err
+	}()
+	if err := <-statusResult; err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	close(repo.allowCleanup)
+
+	if deleted := <-cleanupResult; deleted {
+		t.Fatal("cleanup deleted a record whose completed replay lease was renewed")
+	}
+	if repo.snapshot() == nil {
+		t.Fatal("renewed record was removed")
+	}
+}
+
+type beginCallResult struct {
+	decision Decision
+	err      error
+}
+
+type leaseRaceRepository struct {
+	mu             sync.Mutex
+	record         *Record
+	deleteEntered  chan struct{}
+	allowDelete    chan struct{}
+	cleanupEntered chan struct{}
+	allowCleanup   chan struct{}
+	createCalls    int
+}
+
+func newLeaseRaceRepository(record *Record) *leaseRaceRepository {
+	copy := *record
+	return &leaseRaceRepository{
+		record: &copy, deleteEntered: make(chan struct{}), allowDelete: make(chan struct{}),
+		cleanupEntered: make(chan struct{}), allowCleanup: make(chan struct{}),
+	}
+}
+
+func (r *leaseRaceRepository) Get(context.Context, uint, string, string) (*Record, error) {
+	return r.snapshotOrError()
+}
+
+func (r *leaseRaceRepository) GetStatus(context.Context, uint, string, string) (*OperationStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record == nil {
+		return nil, ErrRecordNotFound
+	}
+	return &OperationStatus{
+		State: r.record.State, StatusCode: r.record.StatusCode, ExpiresAt: r.record.ExpiresAt,
+	}, nil
+}
+
+func (r *leaseRaceRepository) ExtendCompletedReplayLease(
+	_ context.Context,
+	_ uint,
+	_, _ string,
+	now, expectedExpiresAt, leaseUntil time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record == nil || r.record.State != StateCompleted ||
+		!r.record.ExpiresAt.Equal(expectedExpiresAt) || !r.record.ExpiresAt.After(now) {
+		return ErrRecordNotFound
+	}
+	r.record.ExpiresAt = leaseUntil
+	return nil
+}
+
+func (r *leaseRaceRepository) Create(_ context.Context, record *Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.createCalls++
+	copy := *record
+	r.record = &copy
+	return nil
+}
+
+func (r *leaseRaceRepository) Complete(context.Context, uint, string, string, int, []byte) error {
+	return nil
+}
+
+func (r *leaseRaceRepository) DeleteProcessing(context.Context, uint, string, string) error {
+	return nil
+}
+
+func (r *leaseRaceRepository) Delete(context.Context, uint, string, string) error {
+	return errors.New("unconditional delete must not be used")
+}
+
+func (r *leaseRaceRepository) DeleteExpired(
+	_ context.Context,
+	_ uint,
+	_, _, state, requestHash string,
+	expectedExpiresAt, now time.Time,
+) error {
+	close(r.deleteEntered)
+	<-r.allowDelete
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record == nil || r.record.State != state || r.record.RequestHash != requestHash ||
+		!r.record.ExpiresAt.Equal(expectedExpiresAt) || r.record.ExpiresAt.After(now) {
+		return ErrRecordNotFound
+	}
+	r.record = nil
+	return nil
+}
+
+func (r *leaseRaceRepository) cleanupExpired(cutoff time.Time) bool {
+	close(r.cleanupEntered)
+	<-r.allowCleanup
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record == nil || !r.record.ExpiresAt.Before(cutoff) {
+		return false
+	}
+	r.record = nil
+	return true
+}
+
+func (r *leaseRaceRepository) snapshotOrError() (*Record, error) {
+	record := r.snapshot()
+	if record == nil {
+		return nil, ErrRecordNotFound
+	}
+	return record, nil
+}
+
+func (r *leaseRaceRepository) snapshot() *Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.record == nil {
+		return nil
+	}
+	copy := *r.record
+	return &copy
 }
 
 func TestCompletedStatusLeaseKeepsOriginalReplaySafePastPriorExpiry(t *testing.T) {
