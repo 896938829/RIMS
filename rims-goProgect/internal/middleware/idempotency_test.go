@@ -184,6 +184,8 @@ func TestIdempotencyRejectsInvalidHeaderKeysBeforeServiceOrHandler(t *testing.T)
 		key  string
 	}{
 		{name: "empty", key: ""},
+		{name: "dot segment", key: "."},
+		{name: "double dot segment", key: ".."},
 		{name: "unicode", key: "幂等键"},
 		{name: "slash", key: "draft/key"},
 		{name: "space", key: "draft key"},
@@ -224,7 +226,7 @@ func TestIdempotencyRejectsInvalidHeaderKeysBeforeServiceOrHandler(t *testing.T)
 }
 
 func TestIdempotencyAcceptsBoundaryAndSpecialURLSafeHeaderKeys(t *testing.T) {
-	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-"} {
+	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-", ".a", "a.."} {
 		t.Run(key[:min(len(key), 16)], func(t *testing.T) {
 			seenKey := ""
 			svc := &fakeIdempotencyService{

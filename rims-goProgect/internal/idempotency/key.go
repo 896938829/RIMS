@@ -14,6 +14,9 @@ func ValidateKey(key string) error {
 	if len(key) == 0 || len(key) > MaxKeyLength {
 		return ErrInvalidKey
 	}
+	if key == "." || key == ".." {
+		return ErrInvalidKey
+	}
 	for i := 0; i < len(key); i++ {
 		c := key[i]
 		if (c >= 'a' && c <= 'z') ||

@@ -109,6 +109,8 @@ func TestHandlerRejectsInvalidKeysThroughRealGinRoute(t *testing.T) {
 		key  string
 	}{
 		{name: "empty", key: ""},
+		{name: "dot segment", key: "."},
+		{name: "double dot segment", key: ".."},
 		{name: "unicode", key: "幂等键"},
 		{name: "encoded slash", key: "draft/key"},
 		{name: "too long", key: strings.Repeat("a", 256)},
@@ -135,7 +137,7 @@ func TestHandlerRejectsInvalidKeysThroughRealGinRoute(t *testing.T) {
 }
 
 func TestHandlerAcceptsBoundaryAndSpecialURLSafeKeys(t *testing.T) {
-	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-"} {
+	for _, key := range []string{strings.Repeat("a", 255), "AZaz09._~-", ".a", "a.."} {
 		t.Run(key[:min(len(key), 16)], func(t *testing.T) {
 			svc := &statusServiceStub{status: &OperationStatus{
 				State:     StateProcessing,
@@ -228,7 +230,11 @@ func statusTestRouter(service StatusService, userID uint) *gin.Engine {
 func performStatusRequest(router http.Handler, key, scope, suffix string) *httptest.ResponseRecorder {
 	path := "/api/v1/operations/idempotency"
 	if key != "" {
-		path += "/" + url.PathEscape(key)
+		encodedKey := url.PathEscape(key)
+		if key == "." || key == ".." {
+			encodedKey = strings.ReplaceAll(key, ".", "%2E")
+		}
+		path += "/" + encodedKey
 	}
 	path += "?scope=" + url.QueryEscape(scope) + suffix
 	request := httptest.NewRequest(http.MethodGet, path, nil)
