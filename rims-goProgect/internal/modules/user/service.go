@@ -85,10 +85,8 @@ func (s *UserService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 	}
 
 	roleCode := ""
-	roleName := ""
 	if u.Role != nil {
 		roleCode = u.Role.Code
-		roleName = u.Role.Name
 	}
 
 	token, expiresAt, err := s.tokenSvc.GenerateToken(u.ID, u.Username, u.RoleID, roleCode)
@@ -99,13 +97,7 @@ func (s *UserService) Login(ctx context.Context, req LoginRequest) (*LoginRespon
 	return &LoginResponse{
 		Token:     token,
 		ExpiresAt: expiresAt,
-		User: UserBrief{
-			ID:       u.ID,
-			Username: u.Username,
-			RealName: u.RealName,
-			RoleCode: roleCode,
-			RoleName: roleName,
-		},
+		User:      ToUserBrief(u),
 	}, nil
 }
 
@@ -163,13 +155,7 @@ func (s *UserService) Register(ctx context.Context, req RegisterRequest) (*Login
 	return &LoginResponse{
 		Token:     token,
 		ExpiresAt: expiresAt,
-		User: UserBrief{
-			ID:       created.ID,
-			Username: created.Username,
-			RealName: created.RealName,
-			RoleCode: created.Role.Code,
-			RoleName: created.Role.Name,
-		},
+		User:      ToUserBrief(created),
 	}, nil
 }
 

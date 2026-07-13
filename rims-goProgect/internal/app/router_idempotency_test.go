@@ -31,13 +31,35 @@ func TestBuildRouterMutationRoutesMatchIdempotencyRegistry(t *testing.T) {
 	}
 
 	registered := idempotency.RegisteredMutationRoutes()
-	if len(registered) != 5 {
-		t.Fatalf("registered idempotent mutation routes = %d, want 5", len(registered))
+	if len(registered) != 7 {
+		t.Fatalf("registered idempotent mutation routes = %d, want 7", len(registered))
 	}
 	for _, route := range registered {
 		if !actual[route.Scope()] {
 			t.Fatalf("registered idempotent mutation route %q is not mounted", route.Scope())
 		}
+	}
+}
+
+func TestIdempotentMutationRoutesDeclareStablePermissionContract(t *testing.T) {
+	want := map[idempotency.MutationRouteID]string{
+		idempotency.CreateDocumentMutation:              "document:create",
+		idempotency.CompleteDocumentMutation:            "document:complete",
+		idempotency.ConfirmStocktakeMutation:            "stocktake:confirm",
+		idempotency.SettleStocktakeMutation:             "stocktake:settle",
+		idempotency.UploadFileMutation:                  "file:upload",
+		idempotency.ReplaceFileMutation:                 "file:replace",
+		idempotency.ConvertNonStandardInventoryMutation: "non_std:convert",
+	}
+
+	for _, route := range idempotency.RegisteredMutationRoutes() {
+		if route.PermissionCode != want[route.ID] {
+			t.Fatalf("route %q permission = %q, want %q", route.ID, route.PermissionCode, want[route.ID])
+		}
+		delete(want, route.ID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing mutation permission contracts: %#v", want)
 	}
 }
 

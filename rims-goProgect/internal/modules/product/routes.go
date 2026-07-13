@@ -44,5 +44,5 @@ func RegisterRoutes(
 	nonStd.GET("/:id", perm("non_std:read"), handler.GetNonStd)
 	nonStd.PUT("/:id", perm("non_std:update"), handler.UpdateNonStd)
 	nonStd.DELETE("/:id", perm("non_std:delete"), handler.DeleteNonStd)
-	nonStd.Handle(convertRoute.Method, convertRoute.Path, perm("non_std:convert"), idemMw, handler.ConvertNonStd)
+	nonStd.Handle(convertRoute.Method, convertRoute.Path, perm(convertRoute.PermissionCode), idemMw, handler.ConvertNonStd)
 }

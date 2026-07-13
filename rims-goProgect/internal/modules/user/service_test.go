@@ -25,6 +25,9 @@ type userRepoForServiceTest struct {
 	lockActiveAdminCalls int
 	updateCalled         bool
 	deleteCalled         bool
+	usersByUsername      map[string]*User
+	getByIDErr           error
+	getByUsernameErr     error
 }
 
 func (r *userRepoForServiceTest) Create(ctx context.Context, user *User) error {
@@ -40,6 +43,9 @@ func (r *userRepoForServiceTest) Create(ctx context.Context, user *User) error {
 }
 
 func (r *userRepoForServiceTest) GetByID(ctx context.Context, id uint) (*User, error) {
+	if r.getByIDErr != nil {
+		return nil, r.getByIDErr
+	}
 	if r.usersByID != nil {
 		if u, ok := r.usersByID[id]; ok {
 			return u, nil
@@ -49,6 +55,14 @@ func (r *userRepoForServiceTest) GetByID(ctx context.Context, id uint) (*User, e
 }
 
 func (r *userRepoForServiceTest) GetByUsername(ctx context.Context, username string) (*User, error) {
+	if r.getByUsernameErr != nil {
+		return nil, r.getByUsernameErr
+	}
+	if r.usersByUsername != nil {
+		if u, ok := r.usersByUsername[username]; ok {
+			return u, nil
+		}
+	}
 	return nil, gorm.ErrRecordNotFound
 }
 

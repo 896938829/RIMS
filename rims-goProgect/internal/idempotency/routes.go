@@ -15,6 +15,8 @@ type MutationRouteID string
 const (
 	CreateDocumentMutation              MutationRouteID = "create_document"
 	CompleteDocumentMutation            MutationRouteID = "complete_document"
+	ConfirmStocktakeMutation            MutationRouteID = "confirm_stocktake"
+	SettleStocktakeMutation             MutationRouteID = "settle_stocktake"
 	UploadFileMutation                  MutationRouteID = "upload_file"
 	ReplaceFileMutation                 MutationRouteID = "replace_file"
 	ConvertNonStandardInventoryMutation MutationRouteID = "convert_non_standard_inventory"
@@ -22,10 +24,11 @@ const (
 
 // MutationRoute is the single source for route registration and status scope.
 type MutationRoute struct {
-	ID        MutationRouteID
-	Method    string
-	GroupPath string
-	Path      string
+	ID             MutationRouteID
+	Method         string
+	GroupPath      string
+	Path           string
+	PermissionCode string
 }
 
 // Scope returns the method plus full Gin route template stored with a key.
@@ -34,11 +37,13 @@ func (r MutationRoute) Scope() string {
 }
 
 var registeredMutationRoutes = []MutationRoute{
-	{ID: CreateDocumentMutation, Method: http.MethodPost, GroupPath: "/documents", Path: ""},
-	{ID: CompleteDocumentMutation, Method: http.MethodPost, GroupPath: "/documents", Path: "/:id/complete"},
-	{ID: UploadFileMutation, Method: http.MethodPost, GroupPath: "/files", Path: "/upload"},
-	{ID: ReplaceFileMutation, Method: http.MethodPost, GroupPath: "/files", Path: "/:id/replace"},
-	{ID: ConvertNonStandardInventoryMutation, Method: http.MethodPost, GroupPath: "/non-std-inventory", Path: "/:id/convert"},
+	{ID: CreateDocumentMutation, Method: http.MethodPost, GroupPath: "/documents", Path: "", PermissionCode: "document:create"},
+	{ID: CompleteDocumentMutation, Method: http.MethodPost, GroupPath: "/documents", Path: "/:id/complete", PermissionCode: "document:complete"},
+	{ID: ConfirmStocktakeMutation, Method: http.MethodPost, GroupPath: "/documents", Path: "/:id/confirm", PermissionCode: "stocktake:confirm"},
+	{ID: SettleStocktakeMutation, Method: http.MethodPost, GroupPath: "/documents", Path: "/:id/settle", PermissionCode: "stocktake:settle"},
+	{ID: UploadFileMutation, Method: http.MethodPost, GroupPath: "/files", Path: "/upload", PermissionCode: "file:upload"},
+	{ID: ReplaceFileMutation, Method: http.MethodPost, GroupPath: "/files", Path: "/:id/replace", PermissionCode: "file:replace"},
+	{ID: ConvertNonStandardInventoryMutation, Method: http.MethodPost, GroupPath: "/non-std-inventory", Path: "/:id/convert", PermissionCode: "non_std:convert"},
 }
 
 // RegisteredMutationRoutes returns a copy of the public mutation registry.

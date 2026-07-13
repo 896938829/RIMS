@@ -70,6 +70,8 @@ func TestRegisteredMutationScopeContractAndStatusRoutes(t *testing.T) {
 	expected := map[string]bool{
 		"POST /api/v1/documents":                     false,
 		"POST /api/v1/documents/:id/complete":        false,
+		"POST /api/v1/documents/:id/confirm":         false,
+		"POST /api/v1/documents/:id/settle":          false,
 		"POST /api/v1/files/upload":                  false,
 		"POST /api/v1/files/:id/replace":             false,
 		"POST /api/v1/non-std-inventory/:id/convert": false,

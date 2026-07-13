@@ -140,9 +140,9 @@ func buildRouter(cfg config.Config, gormDB *gorm.DB) *gin.Engine {
 	user.RegisterRoutes(api, userHandler, authMw, permMw)
 	warehouse.RegisterRoutes(api, warehouseHandler, authMw, permMw)
 	product.RegisterRoutes(api, productHandler, authMw, whScope, idemMw, permMw)
-	document.RegisterRoutes(api, docHandler, authMw, whScope, idemMw)
+	document.RegisterRoutes(api, docHandler, authMw, whScope, idemMw, permMw)
 	report.RegisterRoutes(api, reportHandler, authMw, whScope)
-	file.RegisterRoutes(api, fileHandler, authMw, idemMw)
+	file.RegisterRoutes(api, fileHandler, authMw, idemMw, permMw)
 	audit.RegisterRoutes(api, auditHandler, authMw, permMw)
 
 	return r

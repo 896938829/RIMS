@@ -3,7 +3,11 @@
 
 package user
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // --- Auth DTOs ---
 
@@ -31,11 +35,12 @@ type RegisterRequest struct {
 
 // UserBrief is a compact user representation for token responses.
 type UserBrief struct {
-	ID       uint   `json:"id"`
-	Username string `json:"username"`
-	RealName string `json:"realName"`
-	RoleCode string `json:"roleCode"`
-	RoleName string `json:"roleName"`
+	ID              uint     `json:"id"`
+	Username        string   `json:"username"`
+	RealName        string   `json:"realName"`
+	RoleCode        string   `json:"roleCode"`
+	RoleName        string   `json:"roleName"`
+	PermissionCodes []string `json:"permissionCodes"`
 }
 
 // --- User CRUD DTOs ---
@@ -72,17 +77,18 @@ type ResetPasswordRequest struct {
 
 // UserResponse is the full user representation in API responses.
 type UserResponse struct {
-	ID        uint      `json:"id"`
-	Username  string    `json:"username"`
-	RealName  string    `json:"realName"`
-	Phone     string    `json:"phone"`
-	Email     string    `json:"email"`
-	RoleID    uint      `json:"roleId"`
-	RoleCode  string    `json:"roleCode,omitempty"`
-	RoleName  string    `json:"roleName,omitempty"`
-	Status    int8      `json:"status"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID              uint      `json:"id"`
+	Username        string    `json:"username"`
+	RealName        string    `json:"realName"`
+	Phone           string    `json:"phone"`
+	Email           string    `json:"email"`
+	RoleID          uint      `json:"roleId"`
+	RoleCode        string    `json:"roleCode,omitempty"`
+	RoleName        string    `json:"roleName,omitempty"`
+	PermissionCodes []string  `json:"permissionCodes"`
+	Status          int8      `json:"status"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // ToResponse converts a User model to a UserResponse DTO.
@@ -102,7 +108,41 @@ func ToResponse(u *User) UserResponse {
 		resp.RoleCode = u.Role.Code
 		resp.RoleName = u.Role.Name
 	}
+	resp.PermissionCodes = permissionCodes(u)
 	return resp
+}
+
+// ToUserBrief converts a User to the compact authenticated-user projection.
+func ToUserBrief(u *User) UserBrief {
+	brief := UserBrief{
+		ID:              u.ID,
+		Username:        u.Username,
+		RealName:        u.RealName,
+		PermissionCodes: permissionCodes(u),
+	}
+	if u.Role != nil {
+		brief.RoleCode = u.Role.Code
+		brief.RoleName = u.Role.Name
+	}
+	return brief
+}
+
+func permissionCodes(u *User) []string {
+	codes := make(map[string]struct{})
+	if u != nil && u.Role != nil {
+		for _, permission := range u.Role.Permissions {
+			code := strings.TrimSpace(permission.Code)
+			if code != "" {
+				codes[code] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(codes))
+	for code := range codes {
+		result = append(result, code)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // --- Role DTOs ---

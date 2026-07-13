@@ -69,7 +69,7 @@ func TestFileHandlerReplaceContractPreservesIDAndUsesIdempotencyRoute(t *testing
 	idemCalls := 0
 	router := gin.New()
 	api := router.Group("/api/v1")
-	RegisterRoutes(api, handler, func(c *gin.Context) { c.Set(types.CtxKeyUserID, uint(7)); c.Next() }, func(c *gin.Context) { idemCalls++; c.Next() })
+	RegisterRoutes(api, handler, func(c *gin.Context) { c.Set(types.CtxKeyUserID, uint(7)); c.Next() }, func(c *gin.Context) { idemCalls++; c.Next() }, func(string) gin.HandlerFunc { return func(c *gin.Context) { c.Next() } })
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/files/4/replace", nil)
 	router.ServeHTTP(httptest.NewRecorder(), request)
 	if idemCalls != 1 {
