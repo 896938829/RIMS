@@ -25,6 +25,7 @@ type userRepoForServiceTest struct {
 	lockActiveAdminCalls int
 	updateCalled         bool
 	deleteCalled         bool
+	listUsers            []User
 	usersByUsername      map[string]*User
 	getByIDErr           error
 	getByUsernameErr     error
@@ -71,7 +72,7 @@ func (r *userRepoForServiceTest) GetAuthUser(ctx context.Context, userID uint) (
 }
 
 func (r *userRepoForServiceTest) List(ctx context.Context, page types.PageRequest) ([]User, int64, error) {
-	return nil, 0, nil
+	return r.listUsers, int64(len(r.listUsers)), nil
 }
 
 func (r *userRepoForServiceTest) Update(ctx context.Context, user *User) error {

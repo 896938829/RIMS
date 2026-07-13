@@ -12,7 +12,11 @@ import (
 	"rims-go/internal/types"
 )
 
-const defaultTTL = 24 * time.Hour
+const (
+	defaultTTL         = 24 * time.Hour
+	defaultReplayLease = 2 * time.Minute
+	maxReplayLease     = 5 * time.Minute
+)
 
 var ErrKeyReusedWithDifferentRequest = errors.New("idempotency key reused with different request")
 
@@ -40,8 +44,10 @@ type OperationStatus struct {
 
 // Service coordinates idempotency key state transitions.
 type Service struct {
-	repo Repository
-	ttl  time.Duration
+	repo        Repository
+	ttl         time.Duration
+	now         func() time.Time
+	replayLease time.Duration
 }
 
 // NewService creates an idempotency service. Non-positive TTL values default
@@ -50,12 +56,17 @@ func NewService(repo Repository, ttl time.Duration) *Service {
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
-	return &Service{repo: repo, ttl: ttl}
+	return &Service{
+		repo:        repo,
+		ttl:         ttl,
+		now:         time.Now,
+		replayLease: defaultReplayLease,
+	}
 }
 
 // Begin reserves a key or returns the cached state for an existing key.
 func (s *Service) Begin(ctx context.Context, userID uint, scope, key, requestHash string) (Decision, error) {
-	now := time.Now()
+	now := s.now()
 	record, err := s.repo.Get(ctx, userID, scope, key)
 	if errors.Is(err, ErrRecordNotFound) {
 		if createErr := s.createProcessing(ctx, userID, scope, key, requestHash, now); createErr != nil {
@@ -74,7 +85,7 @@ func (s *Service) beginExisting(ctx context.Context, userID uint, scope, key, re
 	if err != nil {
 		return Decision{}, fmt.Errorf("create idempotency processing record: %w; fallback get failed: %v", createErr, err)
 	}
-	decision, err := s.decisionForRecord(ctx, record, requestHash, time.Now())
+	decision, err := s.decisionForRecord(ctx, record, requestHash, s.now())
 	if err != nil {
 		return Decision{}, err
 	}
@@ -137,12 +148,35 @@ func (s *Service) Release(ctx context.Context, userID uint, scope, key string) e
 
 // Status returns safe metadata for an unexpired idempotency record.
 func (s *Service) Status(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error) {
+	now := s.now()
 	status, err := s.repo.GetStatus(ctx, userID, scope, key)
 	if err != nil {
 		return nil, err
 	}
-	if !status.ExpiresAt.IsZero() && !status.ExpiresAt.After(time.Now()) {
+	if !status.ExpiresAt.IsZero() && !status.ExpiresAt.After(now) {
 		return nil, ErrRecordNotFound
 	}
+	if status.State == StateCompleted {
+		leaseUntil := now.Add(boundedReplayLease(s.replayLease))
+		if status.ExpiresAt.After(leaseUntil) {
+			leaseUntil = status.ExpiresAt
+		}
+		if err := s.repo.ExtendCompletedReplayLease(
+			ctx, userID, scope, key, now, leaseUntil,
+		); err != nil {
+			return nil, err
+		}
+		status.ExpiresAt = leaseUntil
+	}
 	return status, nil
+}
+
+func boundedReplayLease(lease time.Duration) time.Duration {
+	if lease <= 0 {
+		return defaultReplayLease
+	}
+	if lease > maxReplayLease {
+		return maxReplayLease
+	}
+	return lease
 }

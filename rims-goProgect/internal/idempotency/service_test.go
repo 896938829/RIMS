@@ -12,16 +12,38 @@ import (
 )
 
 type fakeRepository struct {
-	record       *Record
-	status       *OperationStatus
-	getErrs      []error
-	statusErr    error
-	createErr    error
-	created      *Record
-	deleted      bool
-	statusUserID uint
-	statusScope  string
-	statusKey    string
+	record         *Record
+	status         *OperationStatus
+	getErrs        []error
+	statusErr      error
+	createErr      error
+	created        *Record
+	deleted        bool
+	statusUserID   uint
+	statusScope    string
+	statusKey      string
+	extendLeaseErr error
+	extendedFrom   time.Time
+	extendedUntil  time.Time
+}
+
+func (r *fakeRepository) ExtendCompletedReplayLease(
+	ctx context.Context,
+	userID uint,
+	scope, key string,
+	now, leaseUntil time.Time,
+) error {
+	r.extendedFrom = now
+	r.extendedUntil = leaseUntil
+	if r.extendLeaseErr == nil {
+		if r.status != nil {
+			r.status.ExpiresAt = leaseUntil
+		}
+		if r.record != nil {
+			r.record.ExpiresAt = leaseUntil
+		}
+	}
+	return r.extendLeaseErr
 }
 
 func (r *fakeRepository) Get(ctx context.Context, userID uint, scope, key string) (*Record, error) {
@@ -273,20 +295,96 @@ func TestStatusUsesCurrentUserScopeAndKey(t *testing.T) {
 }
 
 func TestStatusReturnsCompletedMetadataWithoutStoredRequestOrResponse(t *testing.T) {
-	expiresAt := time.Now().Add(time.Hour)
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Second)
 	repo := &fakeRepository{status: &OperationStatus{
 		State:      StateCompleted,
 		StatusCode: 201,
 		ExpiresAt:  expiresAt,
 	}}
 	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return now }
+	svc.replayLease = 2 * time.Minute
 
 	status, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "key-1")
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
 	}
-	if status.State != StateCompleted || status.StatusCode != 201 || !status.ExpiresAt.Equal(expiresAt) {
+	wantExpiry := now.Add(2 * time.Minute)
+	if status.State != StateCompleted || status.StatusCode != 201 || !status.ExpiresAt.Equal(wantExpiry) {
 		t.Fatalf("status = %+v", status)
+	}
+	if !repo.extendedFrom.Equal(now) || !repo.extendedUntil.Equal(wantExpiry) {
+		t.Fatalf("lease from/until = %s/%s, want %s/%s", repo.extendedFrom, repo.extendedUntil, now, wantExpiry)
+	}
+}
+
+func TestStatusDoesNotReturnCompletedWhenReplayLeaseCASLosesCleanupRace(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		status: &OperationStatus{
+			State: StateCompleted, StatusCode: 201, ExpiresAt: now.Add(time.Millisecond),
+		},
+		extendLeaseErr: ErrRecordNotFound,
+	}
+	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "key-1")
+	if !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("Status() error = %v, want ErrRecordNotFound after lost lease race", err)
+	}
+}
+
+func TestStatusBoundsCompletedReplayLease(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{status: &OperationStatus{
+		State: StateCompleted, StatusCode: 201, ExpiresAt: now.Add(time.Second),
+	}}
+	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return now }
+	svc.replayLease = 24 * time.Hour
+
+	status, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "key-1")
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if status.ExpiresAt.After(now.Add(maxReplayLease)) {
+		t.Fatalf("lease expiry = %s, exceeds max %s", status.ExpiresAt, now.Add(maxReplayLease))
+	}
+}
+
+func TestCompletedStatusLeaseKeepsOriginalReplaySafePastPriorExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	current := now
+	originalExpiry := now.Add(time.Second)
+	repo := &fakeRepository{
+		status: &OperationStatus{
+			State: StateCompleted, StatusCode: 201, ExpiresAt: originalExpiry,
+		},
+		record: &Record{
+			UserID: 7, Scope: "POST /api/v1/documents", IdempotencyKey: "key-1",
+			RequestHash: "hash-1", State: StateCompleted, StatusCode: 201,
+			ResponseBody: []byte(`{"code":0}`), ExpiresAt: originalExpiry,
+		},
+	}
+	svc := NewService(repo, time.Hour)
+	svc.now = func() time.Time { return current }
+	svc.replayLease = 2 * time.Minute
+
+	status, err := svc.Status(context.Background(), 7, "POST /api/v1/documents", "key-1")
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	current = originalExpiry.Add(time.Second)
+	decision, err := svc.Begin(
+		context.Background(), 7, "POST /api/v1/documents", "key-1", "hash-1",
+	)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if decision.Type != DecisionReplay || !status.ExpiresAt.After(current) {
+		t.Fatalf("decision/status = %#v/%#v, want replay inside leased expiry", decision, status)
 	}
 }
 

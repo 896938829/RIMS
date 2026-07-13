@@ -6,6 +6,7 @@ package idempotency
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -19,10 +20,33 @@ var ErrNoProcessingRecord = errors.New("idempotency processing record not found"
 type Repository interface {
 	Get(ctx context.Context, userID uint, scope, key string) (*Record, error)
 	GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error)
+	ExtendCompletedReplayLease(ctx context.Context, userID uint, scope, key string, now, leaseUntil time.Time) error
 	Create(ctx context.Context, record *Record) error
 	Complete(ctx context.Context, userID uint, scope, key string, statusCode int, responseBody []byte) error
 	DeleteProcessing(ctx context.Context, userID uint, scope, key string) error
 	Delete(ctx context.Context, userID uint, scope, key string) error
+}
+
+func (r *repository) ExtendCompletedReplayLease(
+	ctx context.Context,
+	userID uint,
+	scope, key string,
+	now, leaseUntil time.Time,
+) error {
+	result := r.getDB(ctx).
+		Model(&Record{}).
+		Where(
+			"user_id = ? AND scope = ? AND idempotency_key = ? AND state = ? AND expires_at > ?",
+			userID, scope, key, StateCompleted, now,
+		).
+		UpdateColumn("expires_at", leaseUntil)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *repository) GetStatus(ctx context.Context, userID uint, scope, key string) (*OperationStatus, error) {

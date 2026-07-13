@@ -82,20 +82,14 @@ func (r *userRepo) GetAuthUser(ctx context.Context, userID uint) (uint, string, 
 
 func (r *userRepo) List(ctx context.Context, page types.PageRequest) ([]User, int64, error) {
 	page.Defaults()
-	d := r.getDB(ctx).Model(&User{})
-
-	if page.Keyword != "" {
-		kw := "%" + page.Keyword + "%"
-		d = d.Where("username LIKE ? OR real_name LIKE ? OR phone LIKE ?", kw, kw, kw)
-	}
 
 	var total int64
-	if err := d.Count(&total).Error; err != nil {
+	if err := r.listQuery(ctx, page).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var users []User
-	if err := d.Preload("Role").
+	if err := r.listQuery(ctx, page).
 		Offset(page.Offset()).Limit(page.PageSize).
 		Order("id DESC").
 		Find(&users).Error; err != nil {
@@ -103,6 +97,15 @@ func (r *userRepo) List(ctx context.Context, page types.PageRequest) ([]User, in
 	}
 
 	return users, total, nil
+}
+
+func (r *userRepo) listQuery(ctx context.Context, page types.PageRequest) *gorm.DB {
+	d := r.getDB(ctx).Model(&User{}).Preload("Role.Permissions")
+	if page.Keyword != "" {
+		kw := "%" + page.Keyword + "%"
+		d = d.Where("username LIKE ? OR real_name LIKE ? OR phone LIKE ?", kw, kw, kw)
+	}
+	return d
 }
 
 func (r *userRepo) Update(ctx context.Context, u *User) error {
