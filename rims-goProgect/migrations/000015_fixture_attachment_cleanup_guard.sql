@@ -17,6 +17,47 @@ CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
     )
 );
 
+ALTER TABLE rims_dev_fixture_attachment_cleanup
+  ADD COLUMN IF NOT EXISTS claim_token VARCHAR(128),
+  ADD COLUMN IF NOT EXISTS claim_version BIGINT,
+  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ;
+
+UPDATE rims_dev_fixture_attachment_cleanup
+SET claim_version = 0
+WHERE claim_version IS NULL;
+
+UPDATE rims_dev_fixture_attachment_cleanup
+SET queued_at = CURRENT_TIMESTAMP
+WHERE queued_at IS NULL;
+
+ALTER TABLE rims_dev_fixture_attachment_cleanup
+  ALTER COLUMN claim_version SET DEFAULT 0,
+  ALTER COLUMN claim_version SET NOT NULL,
+  ALTER COLUMN queued_at SET DEFAULT CURRENT_TIMESTAMP,
+  ALTER COLUMN queued_at SET NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'rims_dev_fixture_attachment_cleanup'::regclass
+          AND conname = 'rims_dev_fixture_attachment_cleanup_source_check'
+    ) THEN
+        ALTER TABLE rims_dev_fixture_attachment_cleanup
+          ADD CONSTRAINT rims_dev_fixture_attachment_cleanup_source_check CHECK (
+            source_doc_no LIKE 'M9DOC%'
+            OR source_remark LIKE 'M9-E2E:%'
+          );
+    END IF;
+END;
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_rims_dev_fixture_cleanup_claim_lease
+ON rims_dev_fixture_attachment_cleanup (claimed_at)
+WHERE claim_token IS NOT NULL;
+
 CREATE OR REPLACE FUNCTION rims_guard_fixture_attachment_object_key()
 RETURNS trigger
 LANGUAGE plpgsql

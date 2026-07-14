@@ -42,6 +42,8 @@ for lease_fragment in \
 	'RIMS_M9_CLAIM_LEASE_MS' \
 	"claimed_at < CURRENT_TIMESTAMP - :'claim_lease'::interval" \
 	"pending.claim_version = :'claim_version'::bigint" \
+	"pending.claimed_at >= CURRENT_TIMESTAMP - :'claim_lease'::interval" \
+	'RIMS_M9_DELETE_ENTITLEMENT' \
 	"set_config('statement_timeout', :'cleanup_statement_timeout', true)" \
 	'M9 cleanup release failed'; do
 	grep -Fq "${lease_fragment}" "${SEED_SCRIPT}" ||
@@ -201,6 +203,8 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
+	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
 elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	rm -f -- "${state_dir}/pending"
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
@@ -286,6 +290,8 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 1'
+elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
+	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
 elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
 	rm -f -- "${state_dir}/pending"
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
@@ -340,6 +346,8 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
+	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
 elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	touch "${state_dir}/pending-b"
 	rm -f -- "${state_dir}/pending-a"
@@ -374,6 +382,80 @@ fi
 [[ ! -e "${concurrent_state}/concurrent-row-cleared" ]] ||
 	fail "reset used an unconditional pending-table delete"
 
+lost_owner_dir="${GUARD_TMP_DIR}/lost-owner"
+lost_owner_bin="${lost_owner_dir}/bin"
+lost_owner_uploads="${lost_owner_dir}/uploads"
+lost_owner_state="${lost_owner_dir}/state"
+lost_owner_key="2026/07/reused-legacy-key.bin"
+lost_owner_path="${lost_owner_uploads}/${lost_owner_key}"
+mkdir -p "${lost_owner_bin}" "$(dirname "${lost_owner_path}")" "${lost_owner_state}"
+printf 'worker A fixture bytes\n' > "${lost_owner_path}"
+cat > "${lost_owner_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_LOST_OWNER_STATE:?}
+object_key=${RIMS_TEST_LOST_OWNER_KEY:?}
+object_path=${RIMS_TEST_LOST_OWNER_PATH:?}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ " $* " == *" -v cleanup_statement_timeout="* &&
+	"${input}" == *"UPDATE rims_dev_fixture_attachment_cleanup"* ]]; then
+	touch "${state_dir}/stale-release-attempted"
+elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
+	touch "${state_dir}/stale-finalize-called"
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s' "${object_key}" | base64 | tr -d '\n' |
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 1\n'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
+	touch "${state_dir}/worker-b-finalized" "${state_dir}/worker-b-owner-intact"
+	printf 'ordinary attachment after worker B finalize\n' > "${object_path}"
+	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
+	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 0'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+fi
+EOF
+cat > "${lost_owner_bin}/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${!#}" == "${RIMS_TEST_LOST_OWNER_PATH:?}" ]]; then
+	touch "${RIMS_TEST_LOST_OWNER_STATE:?}/stale-worker-rm-called"
+fi
+exec /bin/rm "$@"
+EOF
+chmod +x "${lost_owner_bin}/psql" "${lost_owner_bin}/rm"
+write_guard_env "${lost_owner_dir}/test.env" "test" "127.0.0.1" "appdb"
+if timeout --signal=TERM --kill-after=1s 10s env \
+	PATH="${lost_owner_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${lost_owner_dir}/test.env" \
+	UPLOAD_DIR="${lost_owner_uploads}" \
+	RIMS_TEST_LOST_OWNER_STATE="${lost_owner_state}" \
+	RIMS_TEST_LOST_OWNER_KEY="${lost_owner_key}" \
+	RIMS_TEST_LOST_OWNER_PATH="${lost_owner_path}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "stale worker reported success after losing physical-delete ownership"
+fi
+[[ -e "${lost_owner_state}/worker-b-finalized" ]] ||
+	fail "lost-owner fixture did not reach worker B finalize interleave"
+[[ ! -e "${lost_owner_state}/stale-worker-rm-called" ]] ||
+	fail "stale worker called rm after worker B changed the claim version"
+[[ -e "${lost_owner_state}/stale-release-attempted" ]] ||
+	fail "lost-owner fixture did not exercise stale release fencing"
+[[ ! -e "${lost_owner_state}/stale-finalize-called" ]] ||
+	fail "stale worker reached finalize after losing delete entitlement"
+[[ -e "${lost_owner_state}/worker-b-owner-intact" ]] ||
+	fail "stale worker release changed worker B ownership"
+[[ -f "${lost_owner_path}" ]] ||
+	fail "stale worker deleted an ordinary attachment that reused a legacy key"
+grep -Fq 'ordinary attachment after worker B finalize' "${lost_owner_path}" ||
+	fail "stale worker changed the replacement ordinary attachment bytes"
+
 cleanup_timeout_dir="${GUARD_TMP_DIR}/cleanup-timeout"
 cleanup_timeout_bin="${cleanup_timeout_dir}/bin"
 cleanup_timeout_uploads="${cleanup_timeout_dir}/uploads"
@@ -402,6 +484,8 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
+	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
 fi
 EOF
 cat > "${cleanup_timeout_bin}/rm" <<'EOF'
@@ -560,6 +644,103 @@ fi
 sql() {
 	"${PSQL[@]}" -c "$1"
 }
+
+legacy_migration_sql="${GUARD_TMP_DIR}/legacy-cleanup-migration.sql"
+{
+	cat <<'SQL'
+BEGIN;
+DROP TRIGGER IF EXISTS trg_guard_fixture_attachment_object_key ON file_attachments;
+DROP TABLE IF EXISTS rims_dev_fixture_attachment_cleanup CASCADE;
+CREATE TABLE rims_dev_fixture_attachment_cleanup (
+  object_key VARCHAR(512) PRIMARY KEY,
+  source_document_id BIGINT NOT NULL,
+  source_doc_no VARCHAR(32) NOT NULL,
+  source_remark TEXT NOT NULL,
+  queued_at TIMESTAMPTZ
+);
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark, queued_at
+) VALUES ('2026/07/legacy-upgrade.bin', 1, 'M9DOC-LEGACY', 'M9-E2E: legacy migration', NULL);
+SQL
+	cat "${CLEANUP_GUARD_MIGRATION}"
+	cat "${CLEANUP_GUARD_MIGRATION}"
+	cat <<'SQL'
+DO $$
+DECLARE
+  claim_version_nullable TEXT;
+  claim_version_default TEXT;
+  queued_at_nullable TEXT;
+  lease_version BIGINT;
+BEGIN
+  SELECT is_nullable, column_default
+  INTO claim_version_nullable, claim_version_default
+  FROM information_schema.columns
+  WHERE table_schema = current_schema()
+    AND table_name = 'rims_dev_fixture_attachment_cleanup'
+    AND column_name = 'claim_version';
+  IF claim_version_nullable IS DISTINCT FROM 'NO'
+     OR COALESCE(claim_version_default, '') NOT LIKE '%0%' THEN
+    RAISE EXCEPTION 'claim_version upgrade is incomplete: nullable %, default %',
+      claim_version_nullable, claim_version_default;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'rims_dev_fixture_attachment_cleanup'
+      AND column_name IN ('claim_token', 'claimed_at')
+    GROUP BY table_name HAVING count(*) = 2
+  ) THEN
+    RAISE EXCEPTION 'claim lease columns are missing after legacy migration';
+  END IF;
+  SELECT is_nullable INTO queued_at_nullable
+  FROM information_schema.columns
+  WHERE table_schema = current_schema()
+    AND table_name = 'rims_dev_fixture_attachment_cleanup'
+    AND column_name = 'queued_at';
+  IF queued_at_nullable IS DISTINCT FROM 'NO' THEN
+    RAISE EXCEPTION 'queued_at was not backfilled and constrained';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND tablename = 'rims_dev_fixture_attachment_cleanup'
+      AND indexname = 'idx_rims_dev_fixture_cleanup_claim_lease'
+  ) THEN
+    RAISE EXCEPTION 'claim lease index is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'rims_dev_fixture_attachment_cleanup'::regclass
+      AND conname = 'rims_dev_fixture_attachment_cleanup_source_check'
+  ) THEN
+    RAISE EXCEPTION 'fixture source constraint is missing after upgrade';
+  END IF;
+  IF (
+    SELECT count(*)
+    FROM pg_trigger
+    WHERE NOT tgisinternal
+      AND tgname IN (
+        'trg_guard_fixture_attachment_object_key',
+        'trg_guard_fixture_cleanup_object_key'
+      )
+  ) <> 2 THEN
+    RAISE EXCEPTION 'fixture cleanup guard triggers are missing after upgrade';
+  END IF;
+  UPDATE rims_dev_fixture_attachment_cleanup
+  SET claim_token = 'migration-owner',
+      claim_version = claim_version + 1,
+      claimed_at = CURRENT_TIMESTAMP
+  WHERE object_key = '2026/07/legacy-upgrade.bin'
+  RETURNING claim_version INTO lease_version;
+  IF lease_version <> 1 THEN
+    RAISE EXCEPTION 'legacy row could not enter lease protocol: %', lease_version;
+  END IF;
+END;
+$$;
+ROLLBACK;
+SQL
+} > "${legacy_migration_sql}"
+timeout --signal=TERM --kill-after=2s 30s "${PSQL[@]}" -f - < "${legacy_migration_sql}" >/dev/null
 
 "${PSQL[@]}" -f - < "${CLEANUP_GUARD_MIGRATION}" >/dev/null
 

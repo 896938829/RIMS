@@ -350,7 +350,49 @@ SQL
 		[[ "${active_reference_count}" =~ ^[0-9]+$ && "${active_reference_count}" -eq 0 ]] ||
 			fail "an active attachment still references an M9 pending object"
 	fi
-	for object_key in "${reset_object_keys[@]}"; do
+	for index in "${!reset_object_keys[@]}"; do
+		object_key="${reset_object_keys[index]}"
+		encoded_key="$(printf '%s' "${object_key}" | base64 | tr -d '\n')"
+		delete_entitlement_output="$("${PSQL[@]}" -qAt \
+			-v claim_token="${reset_claim_token}" \
+			-v claim_version="${reset_claim_versions[index]}" \
+			-v claim_lease="${claim_lease}" \
+			-v object_key_b64="${encoded_key}" \
+			-v advisory_lock_timeout="${advisory_lock_timeout}" \
+			-f - <<'SQL'
+BEGIN;
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
+SELECT pg_advisory_xact_lock(908130011);
+LOCK TABLE file_attachments IN SHARE ROW EXCLUSIVE MODE;
+WITH entitled AS (
+  UPDATE rims_dev_fixture_attachment_cleanup AS pending
+  SET claimed_at = CURRENT_TIMESTAMP
+  WHERE pending.object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
+    AND pending.claim_token = :'claim_token'
+    AND pending.claim_version = :'claim_version'::bigint
+    AND pending.claimed_at >= CURRENT_TIMESTAMP - :'claim_lease'::interval
+    AND NOT EXISTS (
+      SELECT 1
+      FROM file_attachments AS attachment
+      WHERE attachment.object_key = pending.object_key
+        AND attachment.deleted_at IS NULL
+    )
+  RETURNING 1
+)
+SELECT 'RIMS_M9_DELETE_ENTITLEMENT ' || count(*) FROM entitled;
+COMMIT;
+SQL
+)"
+		delete_entitlement_count=-1
+		while IFS= read -r entitlement_line; do
+			case "${entitlement_line}" in
+				'RIMS_M9_DELETE_ENTITLEMENT '*)
+					delete_entitlement_count=${entitlement_line#RIMS_M9_DELETE_ENTITLEMENT }
+					;;
+			esac
+		done <<< "${delete_entitlement_output}"
+		[[ "${delete_entitlement_count}" == 1 ]] ||
+			fail "lost M9 attachment delete entitlement for ${object_key}; physical file was not removed"
 		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
 		rm -f -- "${object_path}" ||
 			fail "failed to remove M9 attachment ${object_key}; cleanup responsibility remains in PostgreSQL"
