@@ -38,13 +38,26 @@ func (r *mutationFileRepo) Update(_ context.Context, f *FileAttachment) error {
 	}
 	copy := *f
 	r.updated = append(r.updated, &copy)
+	delete(r.cleanup, f.ObjectKey)
+	return nil
+}
+
+func (r *mutationFileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+	if err := r.Update(ctx, f); err != nil {
+		return err
+	}
+	if r.cleanup == nil {
+		r.cleanup = make(map[string]storageCleanupTestTask)
+	}
+	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous"}
 	return nil
 }
 
 type mutationStorage struct {
-	saved   []string
-	deleted []string
-	content []byte
+	saved     []string
+	deleted   []string
+	content   []byte
+	deleteErr error
 }
 
 func (s *mutationStorage) Save(_ context.Context, key string, reader io.Reader) error {
@@ -57,7 +70,7 @@ func (s *mutationStorage) Open(context.Context, string) (io.ReadCloser, error) {
 }
 func (s *mutationStorage) Delete(_ context.Context, key string) error {
 	s.deleted = append(s.deleted, key)
-	return nil
+	return s.deleteErr
 }
 func (s *mutationStorage) PublicURL(key string) string { return "/uploads/" + key }
 
@@ -149,6 +162,38 @@ func TestFileServiceReplaceUpdateFailureRollsBackNewObjectAndKeepsOld(t *testing
 	}
 	if storage.deleted[0] == original.ObjectKey {
 		t.Fatal("old object was deleted during rollback")
+	}
+}
+
+func TestFileServiceReplaceRetainsCleanupResponsibilityWhenUpdateAndRollbackDeleteFail(t *testing.T) {
+	businessID := uint(9)
+	original := mutationFile(4, businessID, 7, 3)
+	original.ObjectKey = "old/object.txt"
+	repo := &mutationFileRepo{
+		aclFileRepoStub: aclFileRepoStub{files: map[uint]*FileAttachment{4: &original}},
+		updateErr:       errors.New("replace metadata failed"),
+	}
+	storage := &mutationStorage{deleteErr: errors.New("rollback disk unavailable")}
+	svc := NewFileService(repo, storage, 10, ".txt", "/files/%d/download", nil)
+
+	replaced, err := svc.Replace(context.Background(), 4, FileActor{UserID: 7}, UploadRequest{
+		OriginalName: "new.txt",
+		Reader:       strings.NewReader("new body"),
+	})
+
+	if replaced != nil || err == nil {
+		t.Fatalf("Replace() record/error = %#v/%v, want nil/combined error", replaced, err)
+	}
+	if !strings.Contains(err.Error(), "replace metadata failed") ||
+		!strings.Contains(err.Error(), "rollback disk unavailable") {
+		t.Fatalf("Replace() error = %v, want primary and rollback failures", err)
+	}
+	if len(storage.saved) != 1 || len(repo.cleanup) != 1 {
+		t.Fatalf("saved/cleanup responsibility = %v/%v, want one durable pending object", storage.saved, repo.cleanup)
+	}
+	task := repo.cleanup[storage.saved[0]]
+	if task.operation != "replace" || task.primaryError != "replace metadata failed" || task.cleanupError != "rollback disk unavailable" {
+		t.Fatalf("cleanup task = %#v, want replace failure evidence", task)
 	}
 }
 

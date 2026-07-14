@@ -91,6 +91,18 @@ cleanup_timeout_ms="${RIMS_M9_CLEANUP_TIMEOUT_MS:-1000}"
 cleanup_lock_timeout="${cleanup_timeout_ms}ms"
 cleanup_statement_timeout="${cleanup_timeout_ms}ms"
 
+max_tombstones="${RIMS_M9_MAX_TOMBSTONES:-1000}"
+[[ "${max_tombstones}" =~ ^[0-9]+$ ]] ||
+	fail "RIMS_M9_MAX_TOMBSTONES must be an integer"
+(( max_tombstones >= 1 && max_tombstones <= 1000000 )) ||
+	fail "RIMS_M9_MAX_TOMBSTONES must be between 1 and 1000000"
+
+max_storage_cleanup_pending="${RIMS_STORAGE_CLEANUP_MAX_PENDING:-100}"
+[[ "${max_storage_cleanup_pending}" =~ ^[0-9]+$ ]] ||
+	fail "RIMS_STORAGE_CLEANUP_MAX_PENDING must be an integer"
+(( max_storage_cleanup_pending >= 1 && max_storage_cleanup_pending <= 1000000 )) ||
+	fail "RIMS_STORAGE_CLEANUP_MAX_PENDING must be between 1 and 1000000"
+
 export PGPASSWORD="${DB_PASSWORD:?DB_PASSWORD is required}"
 if command -v psql >/dev/null 2>&1; then
 	PSQL=(
@@ -182,7 +194,8 @@ BEGIN;
 
 SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
-LOCK TABLE documents, inventory_transactions, file_attachments
+LOCK TABLE documents, inventory_transactions, file_attachments,
+  file_storage_cleanup_queue
   IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE TEMP TABLE m9_reset_documents (
@@ -473,6 +486,8 @@ WHERE completed_at IS NULL;
 SELECT 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT ' || count(*)
 FROM rims_dev_fixture_attachment_cleanup
 WHERE completed_at IS NOT NULL;
+SELECT 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT ' || count(*)
+FROM file_storage_cleanup_queue;
 SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
   'namespaceDocuments', (
     SELECT count(*)
@@ -511,6 +526,7 @@ SQL
 	claimed_pending_count=-1
 	pending_attachment_count=-1
 	tombstone_attachment_count=-1
+	storage_cleanup_pending_count=-1
 	reset_counts_seen=false
 	reset_namespace_documents=-1
 	reset_namespace_transactions=-1
@@ -526,6 +542,9 @@ SQL
 				;;
 			'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT '*)
 				tombstone_attachment_count=${finalize_line#RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT }
+				;;
+			'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT '*)
+				storage_cleanup_pending_count=${finalize_line#RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT }
 				;;
 			'RIMS_M9_RESET_COUNTS '*)
 				reset_counts_json=${finalize_line#RIMS_M9_RESET_COUNTS }
@@ -547,6 +566,12 @@ SQL
 		fail "M9 attachment cleanup responsibility remains after reset"
 	[[ "${tombstone_attachment_count}" =~ ^[0-9]+$ ]] ||
 		fail "M9 reset omitted retained attachment tombstone evidence"
+	[[ "${storage_cleanup_pending_count}" =~ ^[0-9]+$ ]] ||
+		fail "M9 reset omitted pending file storage cleanup evidence"
+	(( tombstone_attachment_count <= max_tombstones )) ||
+		fail "M9 cleanup tombstone count ${tombstone_attachment_count} exceeds configured limit ${max_tombstones}"
+	(( storage_cleanup_pending_count <= max_storage_cleanup_pending )) ||
+		fail "file storage cleanup pending count ${storage_cleanup_pending_count} exceeds configured limit ${max_storage_cleanup_pending}"
 	[[ "${reset_counts_seen}" == true ]] ||
 		fail "M9 reset omitted final database count evidence"
 	[[ "${reset_namespace_documents}" -eq 0 &&
@@ -554,8 +579,9 @@ SQL
 		"${reset_namespace_attachments}" -eq 0 ]] ||
 		fail "M9 reset database namespace cleanup is incomplete"
 	printf '%s\n' "${reset_counts_line}"
-	printf 'RIMS_M9_CLEANUP_COUNTS {"pending":%d,"tombstones":%d}\n' \
-		"${pending_attachment_count}" "${tombstone_attachment_count}"
+	printf 'RIMS_M9_CLEANUP_COUNTS {"pending":%d,"tombstones":%d,"tombstoneLimit":%d,"storagePending":%d,"storagePendingLimit":%d}\n' \
+		"${pending_attachment_count}" "${tombstone_attachment_count}" "${max_tombstones}" \
+		"${storage_cleanup_pending_count}" "${max_storage_cleanup_pending}"
 	reset_claim_active=false
 	trap - EXIT
 	rm -f -- "${reset_manifest}"

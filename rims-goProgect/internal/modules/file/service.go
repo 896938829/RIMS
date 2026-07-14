@@ -40,6 +40,11 @@ const (
 	FileActionDelete FileAction = "delete"
 )
 
+const (
+	storageCleanupUpload  = "upload"
+	storageCleanupReplace = "replace"
+)
+
 // FileActor is the caller identity used for file authorization.
 type FileActor struct {
 	UserID  uint
@@ -241,8 +246,11 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	}
 	objectKey := buildObjectKey(now, randHex, ext, fixtureBinding)
 
+	if err := s.repo.PrepareStorageCleanup(ctx, objectKey, storageCleanupUpload); err != nil {
+		return nil, types.ErrSystem(fmt.Errorf("prepare upload storage cleanup responsibility: %w", err))
+	}
 	if err := s.storage.Save(ctx, objectKey, bytes.NewReader(buf.Bytes())); err != nil {
-		return nil, types.ErrSystem(err)
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, err))
 	}
 
 	record := &FileAttachment{
@@ -267,9 +275,7 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	}
 
 	if err := s.repo.Create(ctx, record); err != nil {
-		// Best-effort rollback of the stored object so we don't orphan it.
-		_ = s.storage.Delete(ctx, objectKey)
-		return nil, types.ErrSystem(err)
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, err))
 	}
 
 	if !isPublic {
@@ -353,8 +359,11 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	if err != nil {
 		return nil, err
 	}
+	if err := s.repo.PrepareStorageCleanup(ctx, prepared.objectKey, storageCleanupReplace); err != nil {
+		return nil, types.ErrSystem(fmt.Errorf("prepare replacement storage cleanup responsibility: %w", err))
+	}
 	if err := s.storage.Save(ctx, prepared.objectKey, bytes.NewReader(prepared.content)); err != nil {
-		return nil, types.ErrSystem(err)
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, err))
 	}
 	replacement := *original
 	replacement.ObjectKey = prepared.objectKey
@@ -368,12 +377,46 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	} else {
 		replacement.FileURL = fmt.Sprintf(s.downloadURLFormat, replacement.ID)
 	}
-	if err := s.repo.Update(ctx, &replacement); err != nil {
-		_ = s.storage.Delete(ctx, prepared.objectKey)
-		return nil, types.ErrSystem(err)
+	if err := s.repo.ReplaceObject(ctx, &replacement, original.ObjectKey); err != nil {
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, err))
 	}
-	_ = s.storage.Delete(ctx, original.ObjectKey)
+	if err := s.storage.Delete(ctx, original.ObjectKey); err != nil {
+		recordErr := s.repo.RecordStorageCleanupFailure(
+			ctx, original.ObjectKey, "replacement metadata committed", err.Error(),
+		)
+		if recordErr != nil {
+			return &replacement, types.ErrSystem(errors.Join(
+				fmt.Errorf("delete previous storage object %s: %w", original.ObjectKey, err),
+				fmt.Errorf("record previous object cleanup failure: %w", recordErr),
+			))
+		}
+		return &replacement, nil
+	}
+	if err := s.repo.ClearStorageCleanup(ctx, original.ObjectKey); err != nil {
+		return &replacement, types.ErrSystem(fmt.Errorf("clear previous object cleanup responsibility: %w", err))
+	}
 	return &replacement, nil
+}
+
+func (s *FileService) rollbackStoredObject(ctx context.Context, objectKey string, primaryErr error) error {
+	deleteErr := s.storage.Delete(ctx, objectKey)
+	if deleteErr == nil {
+		if clearErr := s.repo.ClearStorageCleanup(ctx, objectKey); clearErr != nil {
+			return errors.Join(primaryErr, fmt.Errorf("clear storage cleanup responsibility for %s: %w", objectKey, clearErr))
+		}
+		return primaryErr
+	}
+
+	errs := []error{
+		primaryErr,
+		fmt.Errorf("rollback storage object %s: %w", objectKey, deleteErr),
+	}
+	if recordErr := s.repo.RecordStorageCleanupFailure(
+		ctx, objectKey, primaryErr.Error(), deleteErr.Error(),
+	); recordErr != nil {
+		errs = append(errs, fmt.Errorf("record storage cleanup failure for %s: %w", objectKey, recordErr))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *FileService) prepareFileObject(ctx context.Context, req UploadRequest, fixtureBinding bool) (*preparedFileObject, error) {

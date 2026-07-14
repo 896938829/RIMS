@@ -20,6 +20,34 @@ type aclFileRepoStub struct {
 	softDelete []uint
 	created    []*FileAttachment
 	updated    []*FileAttachment
+	cleanup    map[string]storageCleanupTestTask
+}
+
+type storageCleanupTestTask struct {
+	operation    string
+	primaryError string
+	cleanupError string
+}
+
+func (r *aclFileRepoStub) PrepareStorageCleanup(_ context.Context, objectKey, operation string) error {
+	if r.cleanup == nil {
+		r.cleanup = make(map[string]storageCleanupTestTask)
+	}
+	r.cleanup[objectKey] = storageCleanupTestTask{operation: operation}
+	return nil
+}
+
+func (r *aclFileRepoStub) ClearStorageCleanup(_ context.Context, objectKey string) error {
+	delete(r.cleanup, objectKey)
+	return nil
+}
+
+func (r *aclFileRepoStub) RecordStorageCleanupFailure(_ context.Context, objectKey, primaryError, cleanupError string) error {
+	task := r.cleanup[objectKey]
+	task.primaryError = primaryError
+	task.cleanupError = cleanupError
+	r.cleanup[objectKey] = task
+	return nil
 }
 
 func (r *aclFileRepoStub) Create(ctx context.Context, f *FileAttachment) error {
@@ -28,12 +56,24 @@ func (r *aclFileRepoStub) Create(ctx context.Context, f *FileAttachment) error {
 	}
 	copy := *f
 	r.created = append(r.created, &copy)
+	delete(r.cleanup, f.ObjectKey)
 	return nil
 }
 
 func (r *aclFileRepoStub) Update(ctx context.Context, f *FileAttachment) error {
 	copy := *f
 	r.updated = append(r.updated, &copy)
+	return nil
+}
+
+func (r *aclFileRepoStub) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+	if err := r.Update(ctx, f); err != nil {
+		return err
+	}
+	if r.cleanup == nil {
+		r.cleanup = make(map[string]storageCleanupTestTask)
+	}
+	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous"}
 	return nil
 }
 

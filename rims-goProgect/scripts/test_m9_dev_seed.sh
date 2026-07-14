@@ -29,6 +29,17 @@ SEED_SQL="${SCRIPT_DIR}/m9_dev_seed.sql"
 [[ -f "${SEED_SQL}" ]] || fail "seed SQL not found: ${SEED_SQL}"
 CLEANUP_GUARD_MIGRATION="${REPO_ROOT}/migrations/000015_fixture_attachment_cleanup_guard.sql"
 [[ -f "${CLEANUP_GUARD_MIGRATION}" ]] || fail "fixture attachment cleanup guard migration is missing"
+STORAGE_CLEANUP_MIGRATION="${REPO_ROOT}/migrations/000016_file_storage_cleanup_queue.sql"
+[[ -f "${STORAGE_CLEANUP_MIGRATION}" ]] || fail "file storage cleanup queue migration is missing"
+for storage_fragment in \
+	'CREATE TABLE IF NOT EXISTS file_storage_cleanup_queue' \
+	'primary_error TEXT NOT NULL' \
+	'cleanup_error TEXT NOT NULL' \
+	'attempt_count BIGINT NOT NULL' \
+	'ADD COLUMN IF NOT EXISTS ready_at'; do
+	grep -Fq "${storage_fragment}" "${STORAGE_CLEANUP_MIGRATION}" ||
+		fail "file storage cleanup migration missing ${storage_fragment}"
+done
 for guard_fragment in \
 	'CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup' \
 	'BEFORE INSERT OR UPDATE OF object_key' \
@@ -46,6 +57,9 @@ for lease_fragment in \
 	'RIMS_M9_DELETE_ENTITLEMENT' \
 	'RIMS_M9_FINALIZED_TOMBSTONE' \
 	'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT' \
+	'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT' \
+	'RIMS_M9_MAX_TOMBSTONES' \
+	'RIMS_STORAGE_CLEANUP_MAX_PENDING' \
 	'completed_at IS NULL' \
 	"set_config('statement_timeout', :'cleanup_statement_timeout', true)" \
 	'M9 cleanup release failed'; do
@@ -145,6 +159,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
@@ -185,6 +200,56 @@ fi
 [[ -f "${manifest_guard_uploads}/ordinary/keep.bin" ]] ||
 	fail "damaged manifest removed an ordinary upload"
 
+growth_guard_dir="${GUARD_TMP_DIR}/growth-guard"
+growth_guard_bin="${growth_guard_dir}/bin"
+mkdir -p "${growth_guard_bin}"
+cat > "${growth_guard_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT %s\n' "${RIMS_TEST_GROWTH_TOMBSTONES:?}"
+	printf 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT %s\n' "${RIMS_TEST_GROWTH_STORAGE_PENDING:?}"
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+fi
+EOF
+chmod +x "${growth_guard_bin}/psql"
+write_guard_env "${growth_guard_dir}/test.env" "test" "127.0.0.1" "appdb"
+growth_tombstone_log="${growth_guard_dir}/tombstone.log"
+if timeout --signal=TERM --kill-after=1s 10s env \
+	PATH="${growth_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${growth_guard_dir}/test.env" \
+	RIMS_M9_MAX_TOMBSTONES=1 \
+	RIMS_STORAGE_CLEANUP_MAX_PENDING=1 \
+	RIMS_TEST_GROWTH_TOMBSTONES=2 \
+	RIMS_TEST_GROWTH_STORAGE_PENDING=0 \
+	bash "${SEED_SCRIPT}" --reset >"${growth_tombstone_log}" 2>&1; then
+	fail "reset accepted tombstone growth above its configured limit"
+fi
+grep -Fq 'M9 cleanup tombstone count 2 exceeds configured limit 1' "${growth_tombstone_log}" ||
+	fail "tombstone growth limit failure was not diagnosable"
+growth_storage_log="${growth_guard_dir}/storage-pending.log"
+if timeout --signal=TERM --kill-after=1s 10s env \
+	PATH="${growth_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${growth_guard_dir}/test.env" \
+	RIMS_M9_MAX_TOMBSTONES=1 \
+	RIMS_STORAGE_CLEANUP_MAX_PENDING=1 \
+	RIMS_TEST_GROWTH_TOMBSTONES=0 \
+	RIMS_TEST_GROWTH_STORAGE_PENDING=2 \
+	bash "${SEED_SCRIPT}" --reset >"${growth_storage_log}" 2>&1; then
+	fail "reset accepted storage cleanup responsibility above its configured limit"
+fi
+grep -Fq 'file storage cleanup pending count 2 exceeds configured limit 1' "${growth_storage_log}" ||
+	fail "storage cleanup pending limit failure was not diagnosable"
+
 retry_dir="${GUARD_TMP_DIR}/physical-retry"
 retry_bin="${retry_dir}/bin"
 retry_uploads="${retry_dir}/uploads"
@@ -224,6 +289,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	if [[ -e "${state_dir}/pending" ]]; then
@@ -367,6 +433,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
@@ -425,6 +492,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -550,6 +618,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":1,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -772,6 +841,15 @@ SQL
 timeout --signal=TERM --kill-after=2s 30s "${PSQL[@]}" -f - < "${legacy_migration_sql}" >/dev/null
 
 "${PSQL[@]}" -f - < "${CLEANUP_GUARD_MIGRATION}" >/dev/null
+"${PSQL[@]}" -f - < "${STORAGE_CLEANUP_MIGRATION}" >/dev/null
+"${PSQL[@]}" -f - < "${STORAGE_CLEANUP_MIGRATION}" >/dev/null
+assert_eq "$(sql "SELECT count(*) FROM information_schema.columns
+WHERE table_schema = current_schema()
+  AND table_name = 'file_storage_cleanup_queue'
+  AND column_name IN (
+    'object_key', 'source_operation', 'primary_error', 'cleanup_error',
+    'attempt_count', 'ready_at', 'queued_at', 'updated_at'
+  )")" "8" "file storage cleanup migration columns"
 
 post_entitlement_suffix="$$-${RANDOM}"
 post_entitlement_key="2026/07/post-entitlement-${post_entitlement_suffix}.bin"

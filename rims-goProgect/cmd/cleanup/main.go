@@ -60,8 +60,10 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	log.Printf(
-		"cleanup completed: idempotency_keys=%d file_objects=%d file_metadata=%d audit_logs=%d",
+		"cleanup completed: idempotency_keys=%d storage_objects=%d storage_tasks=%d file_objects=%d file_metadata=%d audit_logs=%d",
 		result.IdempotencyKeysDeleted,
+		result.StorageObjectsDeleted,
+		result.StorageTasksCleared,
 		result.FileObjectsDeleted,
 		result.FileMetadataDeleted,
 		result.AuditLogsDeleted,

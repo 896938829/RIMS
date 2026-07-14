@@ -3,7 +3,11 @@
 
 package file
 
-import "rims-go/internal/types"
+import (
+	"time"
+
+	"rims-go/internal/types"
+)
 
 // Business type constants for file attachments.
 const (
@@ -32,6 +36,23 @@ type FileAttachment struct {
 
 // TableName overrides the default table name.
 func (FileAttachment) TableName() string { return "file_attachments" }
+
+// StorageCleanupTask is durable responsibility for an object that may need
+// deletion after a failed metadata operation. It is separate from M9 fixture
+// tombstones and applies to ordinary and fixture object keys alike.
+type StorageCleanupTask struct {
+	ObjectKey       string `gorm:"size:512;primaryKey"`
+	SourceOperation string `gorm:"size:32;not null"`
+	PrimaryError    string `gorm:"type:text;not null;default:''"`
+	CleanupError    string `gorm:"type:text;not null;default:''"`
+	AttemptCount    int64  `gorm:"not null;default:0"`
+	ReadyAt         *time.Time
+	QueuedAt        time.Time `gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `gorm:"index:idx_file_storage_cleanup_queue_updated_at,priority:1"`
+}
+
+// TableName overrides the default table name.
+func (StorageCleanupTask) TableName() string { return "file_storage_cleanup_queue" }
 
 // IsValidBusinessType returns true if the given business type is in the allowed set.
 func IsValidBusinessType(t string) bool {

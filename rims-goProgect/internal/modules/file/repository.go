@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"rims-go/internal/db"
 	"rims-go/internal/types"
@@ -22,8 +23,12 @@ type ListFilter struct {
 
 // FileRepository defines data access operations for file attachments.
 type FileRepository interface {
+	PrepareStorageCleanup(ctx context.Context, objectKey, operation string) error
+	ClearStorageCleanup(ctx context.Context, objectKey string) error
+	RecordStorageCleanupFailure(ctx context.Context, objectKey, primaryError, cleanupError string) error
 	Create(ctx context.Context, f *FileAttachment) error
 	Update(ctx context.Context, f *FileAttachment) error
+	ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error
 	GetByID(ctx context.Context, id uint) (*FileAttachment, error)
 	GetByHash(ctx context.Context, hash string) (*FileAttachment, error)
 	List(ctx context.Context, filter ListFilter, page types.PageRequest) ([]FileAttachment, int64, error)
@@ -44,7 +49,47 @@ func (r *fileRepo) getDB(ctx context.Context) *gorm.DB {
 }
 
 func (r *fileRepo) Create(ctx context.Context, f *FileAttachment) error {
-	return r.getDB(ctx).Create(f).Error
+	db := r.getDB(ctx)
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(f).Error; err != nil {
+			return err
+		}
+		return clearStorageCleanup(tx, f.ObjectKey)
+	})
+}
+
+func (r *fileRepo) PrepareStorageCleanup(ctx context.Context, objectKey, operation string) error {
+	return r.getDB(ctx).Create(&StorageCleanupTask{
+		ObjectKey:       objectKey,
+		SourceOperation: operation,
+	}).Error
+}
+
+func (r *fileRepo) ClearStorageCleanup(ctx context.Context, objectKey string) error {
+	return clearStorageCleanup(r.getDB(ctx), objectKey)
+}
+
+func (r *fileRepo) RecordStorageCleanupFailure(ctx context.Context, objectKey, primaryError, cleanupError string) error {
+	result := r.getDB(ctx).Model(&StorageCleanupTask{}).
+		Where("object_key = ?", objectKey).
+		Updates(map[string]any{
+			"primary_error": primaryError,
+			"cleanup_error": cleanupError,
+			"attempt_count": gorm.Expr("attempt_count + 1"),
+			"ready_at":      gorm.Expr("CURRENT_TIMESTAMP"),
+			"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("record storage cleanup failure: object key %q has no responsibility row", objectKey)
+	}
+	return nil
+}
+
+func clearStorageCleanup(db *gorm.DB, objectKey string) error {
+	return db.Where("object_key = ?", objectKey).Delete(&StorageCleanupTask{}).Error
 }
 
 // IsFixtureAttachmentBinding reports whether a binding belongs to disposable
@@ -65,7 +110,29 @@ SELECT EXISTS (
 }
 
 func (r *fileRepo) Update(ctx context.Context, f *FileAttachment) error {
-	return r.getDB(ctx).Save(f).Error
+	db := r.getDB(ctx)
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(f).Error; err != nil {
+			return err
+		}
+		return clearStorageCleanup(tx, f.ObjectKey)
+	})
+}
+
+func (r *fileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+	db := r.getDB(ctx)
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(f).Error; err != nil {
+			return err
+		}
+		if err := clearStorageCleanup(tx, f.ObjectKey); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&StorageCleanupTask{
+			ObjectKey:       previousObjectKey,
+			SourceOperation: "replace_previous",
+		}).Error
+	})
 }
 
 func (r *fileRepo) GetByID(ctx context.Context, id uint) (*FileAttachment, error) {

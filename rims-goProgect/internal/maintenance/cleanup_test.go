@@ -37,6 +37,9 @@ func (db *fakeCleanupDB) ExecContext(ctx context.Context, query string, args ...
 
 func (db *fakeCleanupDB) QueryContext(ctx context.Context, query string, args ...any) (rowsScanner, error) {
 	db.execs = append(db.execs, cleanupExec{query: query, args: append([]any(nil), args...)})
+	if strings.Contains(query, "FROM file_storage_cleanup_queue") {
+		return &retryStorageCleanupRows{}, nil
+	}
 	if strings.Contains(query, "object_key = $1") && strings.Contains(query, "deleted_at IS NULL") {
 		objectKey := args[0].(string)
 		rows := []cleanupFileRow{}
@@ -249,6 +252,77 @@ func TestCleanerSkipsAuditCleanupWhenRetentionDisabled(t *testing.T) {
 	}
 	if containsCleanupExec(db.execs, "audit_logs") {
 		t.Fatalf("audit cleanup SQL was executed while retention is disabled: %#v", db.execs)
+	}
+}
+
+type retryStorageCleanupDB struct {
+	pending []string
+	execs   []cleanupExec
+}
+
+func (db *retryStorageCleanupDB) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	db.execs = append(db.execs, cleanupExec{query: query, args: append([]any(nil), args...)})
+	if strings.Contains(query, "DELETE FROM file_storage_cleanup_queue") && len(args) == 1 {
+		key := args[0].(string)
+		for index, pending := range db.pending {
+			if pending == key {
+				db.pending = append(db.pending[:index], db.pending[index+1:]...)
+				break
+			}
+		}
+	}
+	return fakeCleanupResult{rows: 1}, nil
+}
+
+func (db *retryStorageCleanupDB) QueryContext(_ context.Context, query string, args ...any) (rowsScanner, error) {
+	db.execs = append(db.execs, cleanupExec{query: query, args: append([]any(nil), args...)})
+	if strings.Contains(query, "FROM file_storage_cleanup_queue") {
+		return &retryStorageCleanupRows{keys: append([]string(nil), db.pending...)}, nil
+	}
+	return &retryStorageCleanupRows{}, nil
+}
+
+type retryStorageCleanupRows struct {
+	keys []string
+	idx  int
+}
+
+func (r *retryStorageCleanupRows) Next() bool { return r.idx < len(r.keys) }
+func (r *retryStorageCleanupRows) Scan(dest ...any) error {
+	*(dest[0].(*string)) = r.keys[r.idx]
+	r.idx++
+	return nil
+}
+func (r *retryStorageCleanupRows) Close() error { return nil }
+func (r *retryStorageCleanupRows) Err() error   { return nil }
+
+func TestCleanerRetriesDurableStorageCleanupResponsibilityUntilDeleteSucceeds(t *testing.T) {
+	const objectKey = "2026/07/orphaned-upload.txt"
+	db := &retryStorageCleanupDB{pending: []string{objectKey}}
+	storage := &fakeCleanupStorage{errFor: map[string]error{objectKey: errors.New("disk unavailable")}}
+	cleaner := NewCleaner(db, storage, Options{BatchSize: 10})
+
+	if _, err := cleaner.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "disk unavailable") {
+		t.Fatalf("first Run() error = %v, want retryable storage deletion failure", err)
+	}
+	if len(db.pending) != 1 || db.pending[0] != objectKey {
+		t.Fatalf("pending after failed retry = %v, want retained responsibility", db.pending)
+	}
+
+	delete(storage.errFor, objectKey)
+	if _, err := cleaner.Run(context.Background()); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(db.pending) != 0 {
+		t.Fatalf("pending after successful retry = %v, want responsibility cleared", db.pending)
+	}
+	if len(storage.deleted) != 2 || storage.deleted[0] != objectKey || storage.deleted[1] != objectKey {
+		t.Fatalf("storage retry deletes = %v, want two attempts for %q", storage.deleted, objectKey)
+	}
+	queueSelect := findCleanupExec(t, db.execs, "SELECT object_key FROM file_storage_cleanup_queue")
+	if !strings.Contains(queueSelect.query, "ready_at IS NOT NULL") ||
+		!strings.Contains(queueSelect.query, "queued_at < $1") {
+		t.Fatalf("storage cleanup queue SQL = %q, want failed-ready or expired-preparation fencing", queueSelect.query)
 	}
 }
 

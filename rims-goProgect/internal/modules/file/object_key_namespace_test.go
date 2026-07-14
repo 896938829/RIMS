@@ -113,6 +113,35 @@ func TestUploadDeletesStoredObjectWhenCleanupHistoryRejectsAttachmentCreate(t *t
 	}
 }
 
+func TestUploadRetainsCleanupResponsibilityWhenMetadataAndRollbackDeleteFail(t *testing.T) {
+	businessID := uint(46)
+	repo := &rejectingNamespaceRepo{
+		namespaceFileRepo: namespaceFileRepo{fixture: false},
+		createErr:         errors.New("fixture cleanup history owns object key"),
+	}
+	storage := &mutationStorage{deleteErr: errors.New("rollback disk unavailable")}
+	svc := NewFileService(repo, storage, 10, ".txt", "/files/%d/download", &aclCheckerStub{allowed: true})
+
+	_, err := svc.Upload(context.Background(), FileActor{UserID: 7}, UploadRequest{
+		BusinessType: BusinessTypeDocAttachment,
+		BusinessID:   &businessID,
+		OriginalName: "ordinary.txt",
+		Reader:       strings.NewReader("ordinary attachment"),
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "fixture cleanup history owns object key") ||
+		!strings.Contains(err.Error(), "rollback disk unavailable") {
+		t.Fatalf("Upload() error = %v, want primary and rollback failures", err)
+	}
+	if len(storage.saved) != 1 || len(repo.cleanup) != 1 {
+		t.Fatalf("saved/cleanup responsibility = %v/%v, want one durable pending object", storage.saved, repo.cleanup)
+	}
+	task := repo.cleanup[storage.saved[0]]
+	if task.operation != "upload" || task.primaryError != "fixture cleanup history owns object key" || task.cleanupError != "rollback disk unavailable" {
+		t.Fatalf("cleanup task = %#v, want upload failure evidence", task)
+	}
+}
+
 func TestReplaceKeepsFixtureBindingInReservedNamespace(t *testing.T) {
 	businessID := uint(44)
 	original := mutationFile(4, businessID, 7, 0)

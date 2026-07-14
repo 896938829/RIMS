@@ -58,6 +58,7 @@ func Run() error {
 			&document.DocumentLine{},
 			&document.InventoryTransaction{},
 			&file.FileAttachment{},
+			&file.StorageCleanupTask{},
 			&audit.AuditLog{},
 			&idempotency.Record{},
 		); err != nil {

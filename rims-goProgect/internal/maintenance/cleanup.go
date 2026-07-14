@@ -6,6 +6,7 @@ package maintenance
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -15,6 +16,7 @@ const (
 	defaultFileDeletedRetention = 30 * 24 * time.Hour
 	defaultAuditLogRetention    = 0
 	defaultCleanupBatchSize     = 1000
+	defaultStoragePrepareLease  = time.Hour
 )
 
 type rowsScanner interface {
@@ -54,6 +56,7 @@ type Options struct {
 	IdempotencyKeyTTL    time.Duration
 	FileDeletedRetention time.Duration
 	AuditLogRetention    time.Duration
+	StoragePrepareLease  time.Duration
 	BatchSize            int
 	Now                  func() time.Time
 }
@@ -61,6 +64,8 @@ type Options struct {
 // Result reports how many records and storage objects were cleaned.
 type Result struct {
 	IdempotencyKeysDeleted int64
+	StorageObjectsDeleted  int64
+	StorageTasksCleared    int64
 	FileObjectsDeleted     int64
 	FileMetadataDeleted    int64
 	AuditLogsDeleted       int64
@@ -72,6 +77,7 @@ func DefaultOptions() Options {
 		IdempotencyKeyTTL:    defaultIdempotencyKeyTTL,
 		FileDeletedRetention: defaultFileDeletedRetention,
 		AuditLogRetention:    defaultAuditLogRetention,
+		StoragePrepareLease:  defaultStoragePrepareLease,
 		BatchSize:            defaultCleanupBatchSize,
 		Now:                  time.Now,
 	}
@@ -108,6 +114,14 @@ func (c *Cleaner) Run(ctx context.Context) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	storageResult, err := c.cleanupPendingStorageObjects(
+		ctx, now.Add(-options.StoragePrepareLease), options.BatchSize,
+	)
+	result.StorageObjectsDeleted = storageResult.StorageObjectsDeleted
+	result.StorageTasksCleared = storageResult.StorageTasksCleared
+	if err != nil {
+		return result, err
+	}
 
 	fileResult, err := c.cleanupDeletedFiles(ctx, now.Add(-options.FileDeletedRetention), options.BatchSize)
 	result.FileObjectsDeleted = fileResult.FileObjectsDeleted
@@ -124,6 +138,82 @@ func (c *Cleaner) Run(ctx context.Context) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func (c *Cleaner) cleanupPendingStorageObjects(ctx context.Context, preparationCutoff time.Time, batchSize int) (Result, error) {
+	if c.storage == nil {
+		return Result{}, fmt.Errorf("cleanup pending storage objects: storage is required")
+	}
+	const query = `SELECT object_key FROM file_storage_cleanup_queue
+WHERE ready_at IS NOT NULL OR queued_at < $1
+ORDER BY updated_at, object_key
+LIMIT $2`
+	rows, err := c.db.QueryContext(ctx, query, preparationCutoff, batchSize)
+	if err != nil {
+		return Result{}, fmt.Errorf("select pending storage cleanup: %w", err)
+	}
+	defer rows.Close()
+
+	var result Result
+	for rows.Next() {
+		var objectKey string
+		if err := rows.Scan(&objectKey); err != nil {
+			return result, fmt.Errorf("scan pending storage cleanup: %w", err)
+		}
+		active, err := c.hasActiveObjectReference(ctx, objectKey)
+		if err != nil {
+			return result, err
+		}
+		if active {
+			cleared, err := c.clearStorageCleanupTask(ctx, objectKey)
+			if err != nil {
+				return result, err
+			}
+			result.StorageTasksCleared += cleared
+			continue
+		}
+		if err := c.storage.Delete(ctx, objectKey); err != nil {
+			if recordErr := c.recordStorageCleanupRetryFailure(ctx, objectKey, err); recordErr != nil {
+				return result, errors.Join(
+					fmt.Errorf("delete pending storage object %s: %w", objectKey, err),
+					recordErr,
+				)
+			}
+			return result, fmt.Errorf("delete pending storage object %s: %w", objectKey, err)
+		}
+		result.StorageObjectsDeleted++
+		cleared, err := c.clearStorageCleanupTask(ctx, objectKey)
+		if err != nil {
+			return result, err
+		}
+		result.StorageTasksCleared += cleared
+	}
+	if err := rows.Err(); err != nil {
+		return result, fmt.Errorf("iterate pending storage cleanup: %w", err)
+	}
+	return result, nil
+}
+
+func (c *Cleaner) recordStorageCleanupRetryFailure(ctx context.Context, objectKey string, cleanupErr error) error {
+	const query = `UPDATE file_storage_cleanup_queue
+SET cleanup_error = $2,
+    attempt_count = attempt_count + 1,
+    ready_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE object_key = $1`
+	if _, err := c.db.ExecContext(ctx, query, objectKey, cleanupErr.Error()); err != nil {
+		return fmt.Errorf("record pending storage cleanup retry %s: %w", objectKey, err)
+	}
+	return nil
+}
+
+func (c *Cleaner) clearStorageCleanupTask(ctx context.Context, objectKey string) (int64, error) {
+	const query = `DELETE FROM file_storage_cleanup_queue WHERE object_key = $1`
+	result, err := c.db.ExecContext(ctx, query, objectKey)
+	if err != nil {
+		return 0, fmt.Errorf("clear storage cleanup responsibility %s: %w", objectKey, err)
+	}
+	return rowsAffected(result)
 }
 
 func cleanupExecutor(db any) (sqlExecutor, error) {
@@ -149,6 +239,9 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.AuditLogRetention < 0 {
 		options.AuditLogRetention = defaults.AuditLogRetention
+	}
+	if options.StoragePrepareLease <= 0 {
+		options.StoragePrepareLease = defaults.StoragePrepareLease
 	}
 	if options.BatchSize <= 0 {
 		options.BatchSize = defaults.BatchSize
