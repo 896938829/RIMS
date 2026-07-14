@@ -19,7 +19,12 @@ fail() {
 [[ -f "${SEED_SCRIPT}" ]] || fail "seed script not found: ${SEED_SCRIPT}"
 
 GUARD_TMP_DIR="$(mktemp -d)"
+RESET_PROBE_FIXTURE_FILE=''
+RESET_PROBE_NON_FIXTURE_FILE=''
 cleanup() {
+	for probe_file in "${RESET_PROBE_FIXTURE_FILE}" "${RESET_PROBE_NON_FIXTURE_FILE}"; do
+		[[ -z "${probe_file}" || ! -e "${probe_file}" ]] || rm -f -- "${probe_file}"
+	done
 	rm -rf "${GUARD_TMP_DIR}"
 }
 trap cleanup EXIT
@@ -57,6 +62,38 @@ write_guard_env "${GUARD_TMP_DIR}/wrong-db.env" "dev" "127.0.0.1" "production"
 if RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${GUARD_TMP_DIR}/wrong-db.env" bash "${SEED_SCRIPT}" >/dev/null 2>&1; then
 	fail "seed accepted a non-local DB_NAME"
 fi
+
+failure_safe_dir="${GUARD_TMP_DIR}/failure-safe"
+failure_safe_bin="${failure_safe_dir}/bin"
+failure_safe_uploads="${failure_safe_dir}/uploads"
+mkdir -p "${failure_safe_bin}" "${failure_safe_uploads}/m9" "${failure_safe_uploads}/other"
+printf 'referenced fixture\n' > "${failure_safe_uploads}/m9/referenced.bin"
+printf 'non fixture\n' > "${failure_safe_uploads}/other/keep.bin"
+cat > "${failure_safe_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+	if [[ "${argument}" == *"SELECT fa.object_key"* ]]; then
+		printf '%s\n' 'm9/referenced.bin'
+		exit 0
+	fi
+done
+cat >/dev/null
+exit 47
+EOF
+chmod +x "${failure_safe_bin}/psql"
+write_guard_env "${failure_safe_dir}/test.env" "test" "127.0.0.1" "appdb"
+if PATH="${failure_safe_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${failure_safe_dir}/test.env" \
+	UPLOAD_DIR="${failure_safe_uploads}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset accepted an injected database cleanup failure"
+fi
+[[ -f "${failure_safe_uploads}/m9/referenced.bin" ]] ||
+	fail "reset deleted a referenced fixture attachment before the database transaction committed"
+[[ -f "${failure_safe_uploads}/other/keep.bin" ]] ||
+	fail "reset deleted a non-fixture attachment after a database failure"
 
 dotenv_probe="${GUARD_TMP_DIR}/dotenv-executed"
 write_guard_env "${GUARD_TMP_DIR}/literal.env" "dev" "127.0.0.1" "production"
@@ -172,7 +209,11 @@ assert_eq "$(sql "SELECT count(*) FROM inventories i JOIN products p ON p.id = i
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents"
 
-sql "DELETE FROM documents WHERE doc_no = 'M9E2E-RESET-PROBE';
+reset_probe_suffix="$$-${RANDOM}"
+reset_probe_object_key="m9-e2e/reset-probe-${reset_probe_suffix}.bin"
+reset_probe_non_fixture_key="manual/m9-nonfixture-${reset_probe_suffix}.bin"
+sql "DELETE FROM file_attachments WHERE object_key = '${reset_probe_object_key}';
+DELETE FROM documents WHERE doc_no = 'M9E2E-RESET-PROBE';
 INSERT INTO documents (
   doc_no, doc_type, status, warehouse_id, remark, created_by, updated_by
 )
@@ -182,10 +223,35 @@ WHERE w.code = 'WH001' AND w.deleted_at IS NULL
   AND u.username = 'admin' AND u.deleted_at IS NULL;"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "1" "reset probe setup"
 
+reset_upload_dir="${UPLOAD_DIR:-./uploads}"
+if [[ "${reset_upload_dir}" != /* ]]; then
+	reset_upload_dir="${REPO_ROOT}/${reset_upload_dir#./}"
+fi
+reset_upload_dir="$(realpath -m -- "${reset_upload_dir}")"
+mkdir -p "${reset_upload_dir}/m9-e2e" "${reset_upload_dir}/manual"
+RESET_PROBE_FIXTURE_FILE="${reset_upload_dir}/${reset_probe_object_key}"
+RESET_PROBE_NON_FIXTURE_FILE="${reset_upload_dir}/${reset_probe_non_fixture_key}"
+printf 'fixture attachment\n' > "${RESET_PROBE_FIXTURE_FILE}"
+printf 'unrelated attachment\n' > "${RESET_PROBE_NON_FIXTURE_FILE}"
+sql "INSERT INTO file_attachments (
+  business_type, business_id, object_key, file_url, original_name,
+  file_size, file_hash, mime_type, created_by, updated_by
+)
+SELECT
+  'doc_attachment', d.id, '${reset_probe_object_key}',
+  '/uploads/${reset_probe_object_key}', 'reset-probe.bin',
+  19, repeat('a', 64), 'application/octet-stream', d.created_by, d.updated_by
+FROM documents d
+WHERE d.doc_no = 'M9E2E-RESET-PROBE';"
+assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${reset_probe_object_key}'")" "1" "reset attachment setup"
+
 RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" bash "${SEED_SCRIPT}" --reset
 reset_fingerprint="$(fixture_fingerprint)"
 assert_eq "${reset_fingerprint}" "${second_fingerprint}" "fixture fingerprint after reset"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "0" "M9 E2E reset probe cleanup"
+assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${reset_probe_object_key}'")" "0" "M9 E2E attachment row cleanup"
+[[ ! -e "${RESET_PROBE_FIXTURE_FILE}" ]] || fail "M9 E2E attachment file survived reset"
+[[ -f "${RESET_PROBE_NON_FIXTURE_FILE}" ]] || fail "reset removed a non-fixture attachment file"
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products after reset"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents after reset"
 

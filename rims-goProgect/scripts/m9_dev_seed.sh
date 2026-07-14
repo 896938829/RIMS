@@ -98,6 +98,7 @@ if [[ "${MODE}" == "--reset" ]]; then
 		upload_dir="${REPO_ROOT}/${upload_dir#./}"
 	fi
 	upload_dir="$(realpath -m -- "${upload_dir}")"
+	reset_manifest="${upload_dir}/.rims-m9-reset-attachments"
 	reset_object_key_output="$("${PSQL[@]}" -qAt -c "
 SELECT fa.object_key
 FROM file_attachments AS fa
@@ -105,8 +106,13 @@ JOIN documents AS d ON d.id = fa.business_id
 WHERE fa.business_type = 'doc_attachment'
   AND (d.doc_no LIKE 'M9DOC%' OR d.remark LIKE 'M9-E2E:%');")"
 	reset_object_keys=()
+	if [[ -f "${reset_manifest}" ]]; then
+		mapfile -t reset_object_keys < "${reset_manifest}"
+	fi
 	if [[ -n "${reset_object_key_output}" ]]; then
-		mapfile -t reset_object_keys <<< "${reset_object_key_output}"
+		while IFS= read -r object_key; do
+			reset_object_keys+=("${object_key}")
+		done <<< "${reset_object_key_output}"
 	fi
 	for object_key in "${reset_object_keys[@]}"; do
 		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
@@ -117,14 +123,13 @@ WHERE fa.business_type = 'doc_attachment'
 		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
 		[[ "${object_path}" == "${upload_dir}/"* ]] ||
 			fail "M9 attachment escaped UPLOAD_DIR"
-		rm -f -- "${object_path}"
 	done
-	namespace_attachment_files=0
-	for object_key in "${reset_object_keys[@]}"; do
-		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
-		[[ ! -e "${object_path}" ]] ||
-			namespace_attachment_files=$((namespace_attachment_files + 1))
-	done
+	if (( ${#reset_object_keys[@]} > 0 )); then
+		mkdir -p -- "${upload_dir}"
+		reset_manifest_tmp="$(mktemp "${upload_dir}/.rims-m9-reset-attachments.XXXXXX")"
+		printf '%s\n' "${reset_object_keys[@]}" | sort -u > "${reset_manifest_tmp}"
+		mv -f -- "${reset_manifest_tmp}" "${reset_manifest}"
+	fi
 
 	"${PSQL[@]}" -qAt -f - <<'SQL'
 BEGIN;
@@ -194,14 +199,26 @@ SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
 
 COMMIT;
 SQL
+	for object_key in "${reset_object_keys[@]}"; do
+		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
+		rm -f -- "${object_path}" ||
+			fail "failed to remove M9 attachment ${object_key}; retry reset using ${reset_manifest}"
+	done
+	namespace_attachment_files=0
+	for object_key in "${reset_object_keys[@]}"; do
+		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
+		[[ ! -e "${object_path}" ]] ||
+			namespace_attachment_files=$((namespace_attachment_files + 1))
+	done
 	[[ "${namespace_attachment_files}" -eq 0 ]] ||
-		fail "M9 attachment files remain after reset"
+		fail "M9 attachment files remain after reset; retry using ${reset_manifest}"
+	rm -f -- "${reset_manifest}"
 fi
 
 "${PSQL[@]}" -f - < "${SQL_FILE}"
 
 namespace_attachment_files="${namespace_attachment_files:-0}"
-fixture_counts="$("${PSQL[@]}" -qAt -v namespace_attachment_files="${namespace_attachment_files}" -c "
+fixture_counts="$("${PSQL[@]}" -qAt -v namespace_attachment_files="${namespace_attachment_files}" -f - <<'SQL'
 SELECT json_build_object(
   'database', current_database(),
   'products', (SELECT count(*) FROM products WHERE code LIKE 'M9-PAGE-%'),
@@ -242,6 +259,8 @@ SELECT json_build_object(
     WHERE fa.business_type = 'doc_attachment'
       AND d.doc_no LIKE 'M9DOC%'
   )
-)::text;")"
+)::text;
+SQL
+)"
 echo "RIMS_M9_FIXTURE_COUNTS ${fixture_counts}"
 echo "M9 development fixtures applied to ${DB_NAME} at ${DB_HOST}:${DB_PORT:-5432}."
