@@ -69,6 +69,13 @@ expected_db_name="${RIMS_LOCAL_DB_NAME:-appdb}"
 [[ "${DB_NAME}" == "${expected_db_name}" ]] ||
 	fail "DB_NAME must be the configured local RIMS database (${expected_db_name})"
 
+advisory_lock_timeout_ms="${RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS:-5000}"
+[[ "${advisory_lock_timeout_ms}" =~ ^[0-9]+$ ]] ||
+	fail "RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS must be an integer"
+(( advisory_lock_timeout_ms >= 50 && advisory_lock_timeout_ms <= 60000 )) ||
+	fail "RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS must be between 50 and 60000"
+advisory_lock_timeout="${advisory_lock_timeout_ms}ms"
+
 export PGPASSWORD="${DB_PASSWORD:?DB_PASSWORD is required}"
 if command -v psql >/dev/null 2>&1; then
 	PSQL=(
@@ -124,9 +131,10 @@ SQL
 		echo "Ignoring untrusted M9 reset manifest; deletion ownership is derived from PostgreSQL." >&2
 	fi
 
-	reset_sql_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
+	reset_sql_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
 BEGIN;
 
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
 LOCK TABLE documents, inventory_transactions, file_attachments
   IN SHARE ROW EXCLUSIVE MODE;
@@ -266,8 +274,9 @@ SQL
 			fail "database-produced M9 attachment escaped UPLOAD_DIR"
 	done
 	if (( ${#reset_object_keys[@]} > 0 )); then
-		active_reference_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
+		active_reference_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
 BEGIN;
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
 LOCK TABLE file_attachments IN SHARE ROW EXCLUSIVE MODE;
 SELECT 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT ' || count(*)
@@ -303,8 +312,9 @@ SQL
 	done
 	[[ "${namespace_attachment_files}" -eq 0 ]] ||
 		fail "M9 attachment files remain after reset; cleanup responsibility remains in PostgreSQL"
-	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
+	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
 BEGIN;
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
 LOCK TABLE documents, inventory_transactions, file_attachments
   IN SHARE ROW EXCLUSIVE MODE;
@@ -401,7 +411,7 @@ SQL
 	rm -f -- "${reset_manifest}"
 fi
 
-"${PSQL[@]}" -f - < "${SQL_FILE}"
+"${PSQL[@]}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - < "${SQL_FILE}"
 
 namespace_attachment_files="${namespace_attachment_files:-0}"
 fixture_counts="$("${PSQL[@]}" -qAt -v namespace_attachment_files="${namespace_attachment_files}" -f - <<'SQL'

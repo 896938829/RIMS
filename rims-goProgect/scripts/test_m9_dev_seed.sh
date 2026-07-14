@@ -30,6 +30,9 @@ SEED_SQL="${SCRIPT_DIR}/m9_dev_seed.sql"
 for lock_file in "${SEED_SCRIPT}" "${SEED_SQL}"; do
 	grep -Fq 'pg_advisory_xact_lock(908130011)' "${lock_file}" ||
 		fail "fixture namespace advisory lock missing from ${lock_file}"
+	lock_count="$(grep -Fc 'pg_advisory_xact_lock(908130011)' "${lock_file}")"
+	timeout_count="$(grep -Fc "set_config('lock_timeout', :'advisory_lock_timeout', true)" "${lock_file}")"
+	assert_eq "${timeout_count}" "${lock_count}" "fixture advisory lock deadline coverage in ${lock_file}"
 done
 if grep -Eq '^DELETE FROM rims_dev_fixture_attachment_cleanup;[[:space:]]*$' "${SEED_SCRIPT}"; then
 	fail "reset still contains an unconditional pending-table delete"
@@ -38,7 +41,12 @@ fi
 GUARD_TMP_DIR="$(mktemp -d)"
 RESET_PROBE_FIXTURE_FILE=''
 RESET_PROBE_NON_FIXTURE_FILE=''
+LOCK_HOLDER_PID=''
 cleanup() {
+	if [[ -n "${LOCK_HOLDER_PID}" ]]; then
+		kill "${LOCK_HOLDER_PID}" >/dev/null 2>&1 || true
+		wait "${LOCK_HOLDER_PID}" >/dev/null 2>&1 || true
+	fi
 	for probe_file in "${RESET_PROBE_FIXTURE_FILE}" "${RESET_PROBE_NON_FIXTURE_FILE}"; do
 		[[ -z "${probe_file}" || ! -e "${probe_file}" ]] || rm -f -- "${probe_file}"
 	done
@@ -467,6 +475,44 @@ fi
 sql() {
 	"${PSQL[@]}" -c "$1"
 }
+
+lock_holder_log="${GUARD_TMP_DIR}/advisory-lock-holder.log"
+timeout 3s "${PSQL[@]}" -c "
+BEGIN;
+SET LOCAL statement_timeout = '2500ms';
+SELECT pg_advisory_xact_lock(908130011);
+SELECT pg_sleep(2);
+COMMIT;
+" >"${lock_holder_log}" 2>&1 &
+LOCK_HOLDER_PID=$!
+lock_ready=false
+for _ in $(seq 1 50); do
+	if [[ "$(sql "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 0 AND objid = 908130011;")" -gt 0 ]]; then
+		lock_ready=true
+		break
+	fi
+	if ! kill -0 "${LOCK_HOLDER_PID}" >/dev/null 2>&1; then
+		break
+	fi
+	sleep 0.05
+done
+[[ "${lock_ready}" == true ]] || fail "advisory lock holder did not become ready before its deadline: $(tr '\n' ' ' < "${lock_holder_log}")"
+
+lock_wait_log="${GUARD_TMP_DIR}/advisory-lock-wait.log"
+set +e
+timeout 1s env \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS=150 \
+	bash "${SEED_SCRIPT}" >"${lock_wait_log}" 2>&1
+lock_wait_exit=$?
+set -e
+wait "${LOCK_HOLDER_PID}" >/dev/null 2>&1 || true
+LOCK_HOLDER_PID=''
+[[ "${lock_wait_exit}" -ne 0 ]] || fail "seed acquired a held fixture advisory lock instead of respecting its deadline"
+[[ "${lock_wait_exit}" -ne 124 ]] || fail "advisory lock wait exceeded the self-test hard deadline"
+grep -qi 'lock timeout' "${lock_wait_log}" ||
+	fail "advisory lock failure did not report the database lock timeout"
 
 fixture_fingerprint() {
 	sql "

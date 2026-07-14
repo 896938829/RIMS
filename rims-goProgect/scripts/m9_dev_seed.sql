@@ -3,6 +3,7 @@
 
 BEGIN;
 
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
 
 INSERT INTO warehouses (
