@@ -15,6 +15,14 @@ fail() {
 	exit 1
 }
 
+assert_eq() {
+	local actual="$1"
+	local expected="$2"
+	local label="$3"
+	[[ "${actual}" == "${expected}" ]] ||
+		fail "${label}: expected ${expected}, got ${actual}"
+}
+
 [[ -f "${ENV_FILE}" ]] || fail "environment file not found: ${ENV_FILE}"
 [[ -f "${SEED_SCRIPT}" ]] || fail "seed script not found: ${SEED_SCRIPT}"
 
@@ -84,6 +92,8 @@ if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 	printf '%s\n' '{"namespaceAttachmentFiles":0}'
 elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 fi
 EOF
 chmod +x "${manifest_guard_bin}/psql"
@@ -109,6 +119,101 @@ if PATH="${manifest_guard_bin}:${PATH}" \
 fi
 [[ -f "${manifest_guard_dir}/outside.bin" ]] ||
 	fail "reset path traversal removed a file outside UPLOAD_DIR"
+
+printf '\n' > "${manifest_guard_uploads}/.rims-m9-reset-attachments"
+if PATH="${manifest_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${manifest_guard_dir}/test.env" \
+	UPLOAD_DIR="${manifest_guard_uploads}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset accepted a damaged empty manifest"
+fi
+[[ -f "${manifest_guard_uploads}/ordinary/keep.bin" ]] ||
+	fail "damaged manifest removed an ordinary upload"
+
+retry_dir="${GUARD_TMP_DIR}/physical-retry"
+retry_bin="${retry_dir}/bin"
+retry_uploads="${retry_dir}/uploads"
+retry_state="${retry_dir}/state"
+retry_object_key="2026/07/m11-retry.bin"
+retry_object_path="${retry_uploads}/${retry_object_key}"
+mkdir -p "${retry_bin}" "$(dirname "${retry_object_path}")" "${retry_state}"
+printf 'retry fixture attachment\n' > "${retry_object_path}"
+cat > "${retry_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_RETRY_STATE:?}
+object_key=${RIMS_TEST_RETRY_OBJECT_KEY:?}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
+	if [[ ! -e "${state_dir}/db-row-deleted" ]]; then
+		touch "${state_dir}/db-row-deleted" "${state_dir}/pending"
+		printf '%s' "${object_key}" | base64 | tr -d '\n' |
+			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+	elif [[ "${input}" == *"rims_dev_fixture_attachment_cleanup"* &&
+		-e "${state_dir}/pending" ]]; then
+		printf '%s' "${object_key}" | base64 | tr -d '\n' |
+			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+	fi
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
+	rm -f -- "${state_dir}/pending"
+elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
+	if [[ -e "${state_dir}/pending" ]]; then
+		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 1'
+	else
+		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	fi
+fi
+EOF
+cat > "${retry_bin}/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target=${!#}
+if [[ "${target}" == "${RIMS_TEST_RETRY_FAIL_PATH:?}" &&
+	! -e "${RIMS_TEST_RETRY_STATE:?}/rm-failed" ]]; then
+	printf 'attempt\n' >> "${RIMS_TEST_RETRY_STATE}/rm-attempts"
+	touch "${RIMS_TEST_RETRY_STATE}/rm-failed"
+	exit 73
+fi
+if [[ "${target}" == "${RIMS_TEST_RETRY_FAIL_PATH}" ]]; then
+	printf 'attempt\n' >> "${RIMS_TEST_RETRY_STATE}/rm-attempts"
+fi
+exec /bin/rm "$@"
+EOF
+chmod +x "${retry_bin}/psql" "${retry_bin}/rm"
+write_guard_env "${retry_dir}/test.env" "test" "127.0.0.1" "appdb"
+if PATH="${retry_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${retry_dir}/test.env" \
+	UPLOAD_DIR="${retry_uploads}" \
+	RIMS_TEST_RETRY_STATE="${retry_state}" \
+	RIMS_TEST_RETRY_OBJECT_KEY="${retry_object_key}" \
+	RIMS_TEST_RETRY_FAIL_PATH="${retry_object_path}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset ignored an injected physical attachment deletion failure"
+fi
+[[ -f "${retry_object_path}" ]] ||
+	fail "failed attachment deletion unexpectedly removed the retry fixture"
+[[ -e "${retry_state}/db-row-deleted" ]] ||
+	fail "physical deletion failure occurred before the database cleanup committed"
+[[ -e "${retry_state}/pending" ]] ||
+	fail "database cleanup did not persist physical attachment responsibility"
+PATH="${retry_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${retry_dir}/test.env" \
+	UPLOAD_DIR="${retry_uploads}" \
+	RIMS_TEST_RETRY_STATE="${retry_state}" \
+	RIMS_TEST_RETRY_OBJECT_KEY="${retry_object_key}" \
+	RIMS_TEST_RETRY_FAIL_PATH="${retry_object_path}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null
+[[ ! -e "${retry_object_path}" ]] ||
+	fail "second reset lost the pending physical attachment cleanup"
+[[ ! -e "${retry_state}/pending" ]] ||
+	fail "second reset did not discharge persisted attachment responsibility"
+assert_eq "$(wc -l < "${retry_state}/rm-attempts" | tr -d '[:space:]')" "2" "physical attachment retry attempts"
 
 failure_safe_dir="${GUARD_TMP_DIR}/failure-safe"
 failure_safe_bin="${failure_safe_dir}/bin"
@@ -196,14 +301,6 @@ fi
 
 sql() {
 	"${PSQL[@]}" -c "$1"
-}
-
-assert_eq() {
-	local actual="$1"
-	local expected="$2"
-	local label="$3"
-	[[ "${actual}" == "${expected}" ]] ||
-		fail "${label}: expected ${expected}, got ${actual}"
 }
 
 fixture_fingerprint() {
@@ -297,6 +394,7 @@ reset_fingerprint="$(fixture_fingerprint)"
 assert_eq "${reset_fingerprint}" "${second_fingerprint}" "fixture fingerprint after reset"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "0" "M9 E2E reset probe cleanup"
 assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${reset_probe_object_key}'")" "0" "M9 E2E attachment row cleanup"
+assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup")" "0" "pending fixture attachment cleanup"
 [[ ! -e "${RESET_PROBE_FIXTURE_FILE}" ]] || fail "M9 E2E attachment file survived reset"
 [[ -f "${RESET_PROBE_NON_FIXTURE_FILE}" ]] || fail "reset removed a non-fixture attachment file"
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products after reset"

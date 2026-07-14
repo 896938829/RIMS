@@ -116,15 +116,28 @@ BEGIN;
 
 CREATE TEMP TABLE m9_reset_documents (
     id BIGINT PRIMARY KEY,
-    doc_no VARCHAR(32) NOT NULL
+    doc_no VARCHAR(32) NOT NULL,
+    remark TEXT NOT NULL
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE m9_reset_attachment_keys (
     object_key VARCHAR(512) PRIMARY KEY
 ) ON COMMIT DROP;
 
-INSERT INTO m9_reset_documents (id, doc_no)
-SELECT id, doc_no
+CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
+    object_key VARCHAR(512) PRIMARY KEY,
+    source_document_id BIGINT NOT NULL,
+    source_doc_no VARCHAR(32) NOT NULL,
+    source_remark TEXT NOT NULL,
+    queued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT rims_dev_fixture_attachment_cleanup_source_check CHECK (
+      source_doc_no LIKE 'M9DOC%'
+      OR source_remark LIKE 'M9-E2E:%'
+    )
+);
+
+INSERT INTO m9_reset_documents (id, doc_no, remark)
+SELECT id, doc_no, COALESCE(remark, '')
 FROM documents
 WHERE doc_no LIKE 'M9DOC%'
    OR remark LIKE 'M9-E2E:%';
@@ -134,6 +147,22 @@ SELECT fa.object_key
 FROM file_attachments AS fa
 WHERE fa.business_type = 'doc_attachment'
   AND fa.business_id IN (SELECT id FROM m9_reset_documents);
+
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key,
+  source_document_id,
+  source_doc_no,
+  source_remark
+)
+SELECT
+  fa.object_key,
+  d.id,
+  d.doc_no,
+  d.remark
+FROM file_attachments AS fa
+JOIN m9_reset_documents AS d ON d.id = fa.business_id
+WHERE fa.business_type = 'doc_attachment'
+ON CONFLICT (object_key) DO NOTHING;
 
 DELETE FROM file_attachments
 WHERE business_type = 'doc_attachment'
@@ -175,7 +204,7 @@ SELECT 'RIMS_M9_RESET_OBJECT_KEY ' || replace(
   E'\n',
   ''
 )
-FROM m9_reset_attachment_keys
+FROM rims_dev_fixture_attachment_cleanup
 ORDER BY object_key;
 
 SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
@@ -199,6 +228,10 @@ COMMIT;
 SQL
 )"
 	reset_object_keys=()
+	reset_counts_seen=false
+	reset_namespace_documents=-1
+	reset_namespace_transactions=-1
+	reset_namespace_attachments=-1
 	while IFS= read -r reset_line; do
 		case "${reset_line}" in
 			'RIMS_M9_RESET_OBJECT_KEY '*)
@@ -207,9 +240,26 @@ SQL
 					fail "invalid database-produced M9 attachment key encoding"
 				reset_object_keys+=("${object_key}")
 				;;
-			'RIMS_M9_RESET_COUNTS '*) printf '%s\n' "${reset_line}" ;;
+			'RIMS_M9_RESET_COUNTS '*)
+				reset_counts_json=${reset_line#RIMS_M9_RESET_COUNTS }
+				if [[ "${reset_counts_json}" =~ \"namespaceDocuments\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceTransactions\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceAttachments\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+					reset_namespace_documents=${BASH_REMATCH[1]}
+					reset_namespace_transactions=${BASH_REMATCH[2]}
+					reset_namespace_attachments=${BASH_REMATCH[3]}
+					reset_counts_seen=true
+				else
+					fail "invalid M9 reset database count evidence"
+				fi
+				printf '%s\n' "${reset_line}"
+				;;
 		esac
 	done <<< "${reset_sql_output}"
+	[[ "${reset_counts_seen}" == true ]] ||
+		fail "M9 reset omitted database count evidence"
+	[[ "${reset_namespace_documents}" -eq 0 &&
+		"${reset_namespace_transactions}" -eq 0 &&
+		"${reset_namespace_attachments}" -eq 0 ]] ||
+		fail "M9 reset database namespace cleanup is incomplete"
 	for object_key in "${reset_object_keys[@]}"; do
 		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
 			fail "unsafe database-produced M9 attachment object key"
@@ -221,18 +271,10 @@ SQL
 		[[ "${object_path}" == "${upload_dir}/"* ]] ||
 			fail "database-produced M9 attachment escaped UPLOAD_DIR"
 	done
-	if (( ${#reset_object_keys[@]} > 0 )); then
-		mkdir -p -- "${upload_dir}"
-		reset_manifest_tmp="$(mktemp "${upload_dir}/.rims-m9-reset-attachments.XXXXXX")"
-		printf '%s\n' "${reset_object_keys[@]}" | sort -u > "${reset_manifest_tmp}"
-		mv -f -- "${reset_manifest_tmp}" "${reset_manifest}"
-	else
-		rm -f -- "${reset_manifest}"
-	fi
 	for object_key in "${reset_object_keys[@]}"; do
 		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
 		rm -f -- "${object_path}" ||
-			fail "failed to remove M9 attachment ${object_key}; retry reset using ${reset_manifest}"
+			fail "failed to remove M9 attachment ${object_key}; cleanup responsibility remains in PostgreSQL"
 	done
 	namespace_attachment_files=0
 	for object_key in "${reset_object_keys[@]}"; do
@@ -241,7 +283,19 @@ SQL
 			namespace_attachment_files=$((namespace_attachment_files + 1))
 	done
 	[[ "${namespace_attachment_files}" -eq 0 ]] ||
-		fail "M9 attachment files remain after reset; retry using ${reset_manifest}"
+		fail "M9 attachment files remain after reset; cleanup responsibility remains in PostgreSQL"
+	"${PSQL[@]}" -qAt -f - >/dev/null <<'SQL'
+BEGIN;
+DELETE FROM rims_dev_fixture_attachment_cleanup;
+COMMIT;
+SQL
+	pending_attachment_output="$("${PSQL[@]}" -qAt -f - <<'SQL'
+SELECT 'RIMS_M9_PENDING_ATTACHMENT_COUNT ' || count(*)
+FROM rims_dev_fixture_attachment_cleanup;
+SQL
+)"
+	[[ "${pending_attachment_output}" =~ ^RIMS_M9_PENDING_ATTACHMENT_COUNT[[:space:]]+0$ ]] ||
+		fail "M9 attachment cleanup responsibility remains after reset"
 	rm -f -- "${reset_manifest}"
 fi
 
