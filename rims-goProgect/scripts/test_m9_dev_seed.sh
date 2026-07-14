@@ -226,6 +226,7 @@ if timeout --signal=TERM --kill-after=1s 10s env \
 	PATH="${growth_guard_bin}:${PATH}" \
 	RIMS_ALLOW_DEV_SEED=1 \
 	RIMS_ENV_FILE="${growth_guard_dir}/test.env" \
+	UPLOAD_DIR="${growth_guard_dir}/uploads" \
 	RIMS_M9_MAX_TOMBSTONES=1 \
 	RIMS_STORAGE_CLEANUP_MAX_PENDING=1 \
 	RIMS_TEST_GROWTH_TOMBSTONES=2 \
@@ -240,15 +241,28 @@ if timeout --signal=TERM --kill-after=1s 10s env \
 	PATH="${growth_guard_bin}:${PATH}" \
 	RIMS_ALLOW_DEV_SEED=1 \
 	RIMS_ENV_FILE="${growth_guard_dir}/test.env" \
-	RIMS_M9_MAX_TOMBSTONES=1 \
-	RIMS_STORAGE_CLEANUP_MAX_PENDING=1 \
+	UPLOAD_DIR="${growth_guard_dir}/uploads" \
+	RIMS_M9_MAX_TOMBSTONES=100 \
+	RIMS_STORAGE_CLEANUP_MAX_PENDING=100 \
 	RIMS_TEST_GROWTH_TOMBSTONES=0 \
-	RIMS_TEST_GROWTH_STORAGE_PENDING=2 \
+	RIMS_TEST_GROWTH_STORAGE_PENDING=1 \
 	bash "${SEED_SCRIPT}" --reset >"${growth_storage_log}" 2>&1; then
-	fail "reset accepted storage cleanup responsibility above its configured limit"
+	fail "reset accepted non-zero storage cleanup responsibility below its configured capacity limit"
 fi
-grep -Fq 'file storage cleanup pending count 2 exceeds configured limit 1' "${growth_storage_log}" ||
-	fail "storage cleanup pending limit failure was not diagnosable"
+grep -Fq 'file storage cleanup pending count 1 prevents a clean reset' "${growth_storage_log}" ||
+	fail "non-zero storage cleanup clean-gate failure was not diagnosable"
+if ! timeout --signal=TERM --kill-after=1s 10s env \
+	PATH="${growth_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${growth_guard_dir}/test.env" \
+	UPLOAD_DIR="${growth_guard_dir}/uploads" \
+	RIMS_M9_MAX_TOMBSTONES=100 \
+	RIMS_STORAGE_CLEANUP_MAX_PENDING=100 \
+	RIMS_TEST_GROWTH_TOMBSTONES=0 \
+	RIMS_TEST_GROWTH_STORAGE_PENDING=0 \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset rejected zero pending storage cleanup responsibility"
+fi
 
 retry_dir="${GUARD_TMP_DIR}/physical-retry"
 retry_bin="${retry_dir}/bin"

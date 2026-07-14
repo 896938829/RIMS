@@ -572,6 +572,8 @@ SQL
 		fail "M9 cleanup tombstone count ${tombstone_attachment_count} exceeds configured limit ${max_tombstones}"
 	(( storage_cleanup_pending_count <= max_storage_cleanup_pending )) ||
 		fail "file storage cleanup pending count ${storage_cleanup_pending_count} exceeds configured limit ${max_storage_cleanup_pending}"
+	(( storage_cleanup_pending_count == 0 )) ||
+		fail "file storage cleanup pending count ${storage_cleanup_pending_count} prevents a clean reset"
 	[[ "${reset_counts_seen}" == true ]] ||
 		fail "M9 reset omitted final database count evidence"
 	[[ "${reset_namespace_documents}" -eq 0 &&
