@@ -154,6 +154,39 @@ reset, and runtime upload directory. It exercises real barcode, document,
 inventory-transaction, file ACL, upload, replace, and delete APIs without a
 cloud provider, then restores the deterministic baseline.
 
+### 前端 M11 有限离线联调 / Frontend M11 Limited Offline Acceptance
+
+前端仓库的 `scripts/rims_m11_smoke.ps1` 可从停止状态自行启动本后端、
+PostgreSQL 依赖、指定 Android AVD、回环桥接和本次运行独占的故障代理：
+
+```powershell
+$env:RIMS_ANDROID_DEVICE = 'Medium_Phone_API_36.1'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\rims_m11_smoke.ps1 -AndroidDevice $env:RIMS_ANDROID_DEVICE -BackendDir $env:RIMS_BACKEND_DIR -BackendWorkspaceRoot $env:RIMS_BACKEND_WORKSPACE_ROOT -Output Json
+```
+
+M11 使用真实登录、仓库、库存、单据、流水、报表、权限、幂等状态和附件 API。
+本地磁盘 provider 仍位于前端仓库
+`.runtime/rims-local/providers/files`，测试报告和故障证据位于
+`.runtime/reports/` 与 `.runtime/m11-smoke-artifacts/`，不依赖云账号、对象存储
+或公网服务。APP 的加密 `rims_offline.sqlite` 位于 Android application-support
+目录，密钥不写入后端或报告。
+
+待同步写入必须由用户在同步中心审阅并明确确认，网络恢复本身不会触发提交。
+未知响应先查询幂等状态并以同一 key 重放；服务端冲突保持可见，只允许丢弃或新建
+替代操作，不会用离线库存覆盖服务端状态。退出和数据清理会按账号清除缓存、outbox、
+暂存附件和扫码状态，并可在用户明确选择时保留同账号加密草稿。
+
+故障代理仅由验收进程持有，覆盖飞行模式、延迟、丢包/API 不可达、Wi-Fi 切换、
+进程重建、过期会话/权限、未知和重复投递、冲突、数据库损坏。脚本退出时恢复网络
+和确定性夹具，只停止 PID、启动时间和身份均匹配的资源。种子/reset 仍仅允许
+`dev`、`development`、`test` 环境。
+
+The M11 path is fully local and exercises the real idempotency status, document,
+inventory, report, permission, and attachment contracts. Network recovery never
+authorizes a write by itself; foreground confirmation, same-key replay, visible
+conflict resolution, namespace-scoped fixture restore, and exact owned-resource
+cleanup are acceptance requirements.
+
 所有命令在 WSL 中执行 / All commands run inside WSL:
 
 ```bash
