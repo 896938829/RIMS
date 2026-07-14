@@ -44,6 +44,9 @@ for lease_fragment in \
 	"pending.claim_version = :'claim_version'::bigint" \
 	"pending.claimed_at >= CURRENT_TIMESTAMP - :'claim_lease'::interval" \
 	'RIMS_M9_DELETE_ENTITLEMENT' \
+	'RIMS_M9_FINALIZED_TOMBSTONE' \
+	'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT' \
+	'completed_at IS NULL' \
 	"set_config('statement_timeout', :'cleanup_statement_timeout', true)" \
 	'M9 cleanup release failed'; do
 	grep -Fq "${lease_fragment}" "${SEED_SCRIPT}" ||
@@ -64,10 +67,17 @@ GUARD_TMP_DIR="$(mktemp -d)"
 RESET_PROBE_FIXTURE_FILE=''
 RESET_PROBE_NON_FIXTURE_FILE=''
 LOCK_HOLDER_PID=''
+POST_ENTITLEMENT_WORKER_PID=''
+POST_ENTITLEMENT_PROCEED=''
 cleanup() {
 	if [[ -n "${LOCK_HOLDER_PID}" ]]; then
 		kill "${LOCK_HOLDER_PID}" >/dev/null 2>&1 || true
 		wait "${LOCK_HOLDER_PID}" >/dev/null 2>&1 || true
+	fi
+	if [[ -n "${POST_ENTITLEMENT_WORKER_PID}" ]]; then
+		[[ -z "${POST_ENTITLEMENT_PROCEED}" ]] || touch "${POST_ENTITLEMENT_PROCEED}"
+		kill "${POST_ENTITLEMENT_WORKER_PID}" >/dev/null 2>&1 || true
+		wait "${POST_ENTITLEMENT_WORKER_PID}" >/dev/null 2>&1 || true
 	fi
 	for probe_file in "${RESET_PROBE_FIXTURE_FILE}" "${RESET_PROBE_NON_FIXTURE_FILE}"; do
 		[[ -z "${probe_file}" || ! -e "${probe_file}" ]] || rm -f -- "${probe_file}"
@@ -134,6 +144,7 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
@@ -205,13 +216,15 @@ elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
 elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
 	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
-elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+elif [[ "${input}" == *"RIMS_M9_FINALIZED_TOMBSTONE"* ]]; then
 	rm -f -- "${state_dir}/pending"
+	touch "${state_dir}/tombstone"
+	printf '%s\n' 'RIMS_M9_FINALIZED_TOMBSTONE 1'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
-elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
-	rm -f -- "${state_dir}/pending"
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	if [[ -e "${state_dir}/pending" ]]; then
 		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 1'
@@ -292,8 +305,6 @@ elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 1'
 elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
 	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
-elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
-	rm -f -- "${state_dir}/pending"
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	if [[ -e "${state_dir}/pending" ]]; then
 		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 1'
@@ -348,20 +359,15 @@ elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
 elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
 	printf '%s\n' 'RIMS_M9_DELETE_ENTITLEMENT 1'
-elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
-	touch "${state_dir}/pending-b"
+elif [[ "${input}" == *"RIMS_M9_FINALIZED_TOMBSTONE"* ]]; then
+	touch "${state_dir}/pending-b" "${state_dir}/tombstone-a"
 	rm -f -- "${state_dir}/pending-a"
+	printf '%s\n' 'RIMS_M9_FINALIZED_TOMBSTONE 1'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
+	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
-elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
-	touch "${state_dir}/pending-b"
-	if [[ "${input}" == *"claim_token"* ]]; then
-		rm -f -- "${state_dir}/pending-a"
-	else
-		rm -f -- "${state_dir}/pending-a" "${state_dir}/pending-b"
-		touch "${state_dir}/concurrent-row-cleared"
-	fi
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
 fi
@@ -402,8 +408,9 @@ if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 elif [[ " $* " == *" -v cleanup_statement_timeout="* &&
 	"${input}" == *"UPDATE rims_dev_fixture_attachment_cleanup"* ]]; then
 	touch "${state_dir}/stale-release-attempted"
-elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
+elif [[ "${input}" == *"RIMS_M9_FINALIZED_TOMBSTONE"* ]]; then
 	touch "${state_dir}/stale-finalize-called"
+	printf '%s\n' 'RIMS_M9_FINALIZED_TOMBSTONE 0'
 elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s' "${object_key}" | base64 | tr -d '\n' |
 		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 1\n'
@@ -417,6 +424,7 @@ elif [[ "${input}" == *"RIMS_M9_DELETE_ENTITLEMENT"* ]]; then
 elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -541,6 +549,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	touch "${state_dir}/namespace-inserted-after-snapshot"
 	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":1,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -669,7 +678,9 @@ DO $$
 DECLARE
   claim_version_nullable TEXT;
   claim_version_default TEXT;
+  completed_at_nullable TEXT;
   queued_at_nullable TEXT;
+  lease_index_definition TEXT;
   lease_version BIGINT;
 BEGIN
   SELECT is_nullable, column_default
@@ -687,10 +698,18 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = current_schema()
       AND table_name = 'rims_dev_fixture_attachment_cleanup'
-      AND column_name IN ('claim_token', 'claimed_at')
-    GROUP BY table_name HAVING count(*) = 2
+      AND column_name IN ('claim_token', 'claimed_at', 'completed_at')
+    GROUP BY table_name HAVING count(*) = 3
   ) THEN
-    RAISE EXCEPTION 'claim lease columns are missing after legacy migration';
+    RAISE EXCEPTION 'claim lease or completion columns are missing after legacy migration';
+  END IF;
+  SELECT is_nullable INTO completed_at_nullable
+  FROM information_schema.columns
+  WHERE table_schema = current_schema()
+    AND table_name = 'rims_dev_fixture_attachment_cleanup'
+    AND column_name = 'completed_at';
+  IF completed_at_nullable IS DISTINCT FROM 'YES' THEN
+    RAISE EXCEPTION 'completed_at must remain nullable for pending rows';
   END IF;
   SELECT is_nullable INTO queued_at_nullable
   FROM information_schema.columns
@@ -700,13 +719,16 @@ BEGIN
   IF queued_at_nullable IS DISTINCT FROM 'NO' THEN
     RAISE EXCEPTION 'queued_at was not backfilled and constrained';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
+  SELECT indexdef INTO lease_index_definition
+  FROM pg_indexes
     WHERE schemaname = current_schema()
       AND tablename = 'rims_dev_fixture_attachment_cleanup'
-      AND indexname = 'idx_rims_dev_fixture_cleanup_claim_lease'
-  ) THEN
-    RAISE EXCEPTION 'claim lease index is missing';
+      AND indexname = 'idx_rims_dev_fixture_cleanup_claim_lease';
+  IF lease_index_definition IS NULL
+     OR lease_index_definition NOT LIKE '%completed_at IS NULL%'
+     OR lease_index_definition NOT LIKE '%claim_token IS NOT NULL%' THEN
+    RAISE EXCEPTION 'claim lease index is missing its pending-row predicate: %',
+      lease_index_definition;
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -714,6 +736,13 @@ BEGIN
       AND conname = 'rims_dev_fixture_attachment_cleanup_source_check'
   ) THEN
     RAISE EXCEPTION 'fixture source constraint is missing after upgrade';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'rims_dev_fixture_attachment_cleanup'::regclass
+      AND conname = 'rims_dev_fixture_attachment_cleanup_completed_claim_check'
+  ) THEN
+    RAISE EXCEPTION 'completed tombstone claim constraint is missing after upgrade';
   END IF;
   IF (
     SELECT count(*)
@@ -743,6 +772,140 @@ SQL
 timeout --signal=TERM --kill-after=2s 30s "${PSQL[@]}" -f - < "${legacy_migration_sql}" >/dev/null
 
 "${PSQL[@]}" -f - < "${CLEANUP_GUARD_MIGRATION}" >/dev/null
+
+post_entitlement_suffix="$$-${RANDOM}"
+post_entitlement_key="2026/07/post-entitlement-${post_entitlement_suffix}.bin"
+post_entitlement_upload_dir="${UPLOAD_DIR:-./uploads}"
+if [[ "${post_entitlement_upload_dir}" != /* ]]; then
+	post_entitlement_upload_dir="${REPO_ROOT}/${post_entitlement_upload_dir#./}"
+fi
+post_entitlement_upload_dir="$(realpath -m -- "${post_entitlement_upload_dir}")"
+post_entitlement_path="${post_entitlement_upload_dir}/${post_entitlement_key}"
+post_entitlement_dir="${GUARD_TMP_DIR}/post-entitlement"
+post_entitlement_bin="${post_entitlement_dir}/bin"
+post_entitlement_state="${post_entitlement_dir}/state"
+post_entitlement_a_log="${post_entitlement_dir}/worker-a.log"
+post_entitlement_b_log="${post_entitlement_dir}/worker-b.log"
+mkdir -p "${post_entitlement_bin}" "${post_entitlement_state}" "$(dirname "${post_entitlement_path}")"
+printf 'worker A fixture before pause\n' > "${post_entitlement_path}"
+cat > "${post_entitlement_bin}/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target=${!#}
+if [[ "${target}" == "${RIMS_TEST_POST_ENTITLEMENT_PATH:?}" ]]; then
+	touch "${RIMS_TEST_POST_ENTITLEMENT_STATE:?}/worker-a-paused"
+	for _ in $(seq 1 400); do
+		[[ ! -e "${RIMS_TEST_POST_ENTITLEMENT_STATE}/worker-a-proceed" ]] || break
+		sleep 0.05
+	done
+	[[ -e "${RIMS_TEST_POST_ENTITLEMENT_STATE}/worker-a-proceed" ]] || {
+		printf '%s\n' 'post-entitlement pause exceeded hard deadline' >&2
+		exit 124
+	}
+fi
+exec /bin/rm "$@"
+EOF
+chmod +x "${post_entitlement_bin}/rm"
+sql "DELETE FROM file_attachments WHERE object_key = '${post_entitlement_key}';
+DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${post_entitlement_key}';
+DELETE FROM documents WHERE doc_no = 'POST-ENTITLEMENT-${post_entitlement_suffix}';
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark
+) VALUES (
+  '${post_entitlement_key}', 1, 'M9DOC-POST-ENTITLEMENT', 'M9-E2E: post entitlement pause'
+);"
+POST_ENTITLEMENT_PROCEED="${post_entitlement_state}/worker-a-proceed"
+timeout --signal=TERM --kill-after=2s 45s env \
+	PATH="${post_entitlement_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_CLAIM_LEASE_MS=1000 \
+	UPLOAD_DIR="${post_entitlement_upload_dir}" \
+	RIMS_TEST_POST_ENTITLEMENT_PATH="${post_entitlement_path}" \
+	RIMS_TEST_POST_ENTITLEMENT_STATE="${post_entitlement_state}" \
+	bash "${SEED_SCRIPT}" --reset >"${post_entitlement_a_log}" 2>&1 &
+POST_ENTITLEMENT_WORKER_PID=$!
+post_entitlement_paused=false
+for _ in $(seq 1 200); do
+	if [[ -e "${post_entitlement_state}/worker-a-paused" ]]; then
+		post_entitlement_paused=true
+		break
+	fi
+	if ! kill -0 "${POST_ENTITLEMENT_WORKER_PID}" >/dev/null 2>&1; then
+		break
+	fi
+	sleep 0.05
+done
+if [[ "${post_entitlement_paused}" != true ]]; then
+	touch "${POST_ENTITLEMENT_PROCEED}"
+	wait "${POST_ENTITLEMENT_WORKER_PID}" >/dev/null 2>&1 || true
+	POST_ENTITLEMENT_WORKER_PID=''
+	fail "worker A did not reach the post-entitlement pause: $(tr '\n' ' ' < "${post_entitlement_a_log}")"
+fi
+sleep 1.2
+set +e
+timeout --signal=TERM --kill-after=2s 60s env \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_CLAIM_LEASE_MS=1000 \
+	UPLOAD_DIR="${post_entitlement_upload_dir}" \
+	bash "${SEED_SCRIPT}" --reset >"${post_entitlement_b_log}" 2>&1
+post_entitlement_b_exit=$?
+set -e
+sql "INSERT INTO documents (
+  doc_no, doc_type, status, warehouse_id, remark, created_by, updated_by
+)
+SELECT 'POST-ENTITLEMENT-${post_entitlement_suffix}', 2, 1, w.id,
+       'ordinary post-entitlement key reuse', u.id, u.id
+FROM warehouses w, users u
+WHERE w.code = 'WH001' AND w.deleted_at IS NULL
+  AND u.username = 'admin' AND u.deleted_at IS NULL;"
+printf 'ordinary attachment after worker B completion\n' > "${post_entitlement_path}"
+set +e
+post_entitlement_insert_log="$(sql "INSERT INTO file_attachments (
+  business_type, business_id, object_key, file_url, original_name,
+  file_size, file_hash, mime_type, created_by, updated_by
+)
+SELECT 'doc_attachment', d.id, '${post_entitlement_key}',
+       '/uploads/${post_entitlement_key}', 'ordinary.bin', 44, repeat('c', 64),
+       'application/octet-stream', d.created_by, d.updated_by
+FROM documents d WHERE d.doc_no = 'POST-ENTITLEMENT-${post_entitlement_suffix}';" 2>&1)"
+post_entitlement_insert_exit=$?
+set -e
+if [[ "${post_entitlement_insert_exit}" -ne 0 ]]; then
+	/bin/rm -f -- "${post_entitlement_path}"
+fi
+touch "${POST_ENTITLEMENT_PROCEED}"
+set +e
+wait "${POST_ENTITLEMENT_WORKER_PID}"
+post_entitlement_a_exit=$?
+set -e
+POST_ENTITLEMENT_WORKER_PID=''
+post_entitlement_attachment_count="$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${post_entitlement_key}'")"
+post_entitlement_tombstone_state="$(sql "SELECT concat_ws('|', claim_version, completed_at IS NOT NULL,
+  claim_token IS NULL, claimed_at IS NULL)
+FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${post_entitlement_key}'")"
+post_entitlement_file_exists=false
+[[ ! -e "${post_entitlement_path}" ]] || post_entitlement_file_exists=true
+sql "DELETE FROM file_attachments WHERE object_key = '${post_entitlement_key}';
+DELETE FROM documents WHERE doc_no = 'POST-ENTITLEMENT-${post_entitlement_suffix}';
+DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${post_entitlement_key}';"
+/bin/rm -f -- "${post_entitlement_path}"
+[[ "${post_entitlement_b_exit}" -eq 0 ]] ||
+	fail "worker B could not reclaim and complete cleanup: $(tr '\n' ' ' < "${post_entitlement_b_log}")"
+[[ "${post_entitlement_a_exit}" -ne 0 ]] ||
+	fail "stale worker A reported success after worker B completed its tombstone"
+grep -Fq 'lost M9 attachment finalize entitlement' "${post_entitlement_a_log}" ||
+	fail "stale worker A did not fail through exact token/version finalize fencing"
+[[ "${post_entitlement_insert_exit}" -ne 0 ]] ||
+	fail "ordinary attachment reused a legacy key after worker B removed cleanup ownership; worker A exit=${post_entitlement_a_exit}, attachment=${post_entitlement_attachment_count}, file=${post_entitlement_file_exists}"
+grep -Fq 'fixture cleanup' <<< "${post_entitlement_insert_log}" ||
+	fail "post-entitlement tombstone rejection was not diagnosable"
+assert_eq "${post_entitlement_attachment_count}" "0" "post-entitlement ordinary attachment rejection"
+assert_eq "${post_entitlement_tombstone_state}" "2|t|t|t" \
+	"post-entitlement permanent cleanup tombstone"
+grep -Fq 'RIMS_M9_CLEANUP_COUNTS {"pending":0,"tombstones":' "${post_entitlement_b_log}" ||
+	fail "worker B did not report pending and retained tombstone evidence separately"
 
 guard_suffix="$$-${RANDOM}"
 guard_ordinary_key="2026/07/ordinary-after-check-${guard_suffix}.bin"
@@ -775,7 +938,7 @@ guard_insert_exit=$?
 set -e
 [[ "${guard_insert_exit}" -ne 0 ]] ||
 	fail "ordinary attachment entered the reserved fixture namespace after cleanup check"
-grep -Fq 'pending fixture cleanup owns object key' <<< "${guard_insert_log}" ||
+grep -Fq 'fixture cleanup history owns object key' <<< "${guard_insert_log}" ||
 	fail "post-check pending-key rejection was not diagnosable"
 assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${guard_ordinary_key}'")" "0" \
 	"ordinary pending-key attachment rejection"
@@ -821,9 +984,20 @@ INSERT INTO rims_dev_fixture_attachment_cleanup (
 );"
 RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" \
 	RIMS_M9_CLAIM_LEASE_MS=1000 bash "${SEED_SCRIPT}" --reset >/dev/null
-assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}'")" \
-	"0" "expired cleanup claim reclamation"
+assert_eq "$(sql "SELECT concat_ws('|', claim_version, completed_at IS NOT NULL,
+  claim_token IS NULL, claimed_at IS NULL)
+FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}'")" \
+	"10|t|t|t" "expired cleanup claim reclamation tombstone"
 [[ ! -e "${lease_expired_path}" ]] || fail "expired cleanup claim did not delete its fixture bytes"
+printf 'manual recreation behind historical tombstone\n' > "${lease_expired_path}"
+RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_CLAIM_LEASE_MS=1000 bash "${SEED_SCRIPT}" --reset >/dev/null
+assert_eq "$(sql "SELECT concat_ws('|', claim_version, completed_at IS NOT NULL)
+FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}'")" \
+	"10|t" "completed cleanup history is not reclaimed"
+[[ -f "${lease_expired_path}" ]] || fail "reset reclaimed a completed tombstone key"
+/bin/rm -f -- "${lease_expired_path}"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}';"
 
 lease_version_key="m9-e2e/lease-version-${guard_suffix}.bin"
 sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}';
@@ -834,10 +1008,14 @@ INSERT INTO rims_dev_fixture_attachment_cleanup (
   '${lease_version_key}', 1, 'M9DOC-LEASE-VERSION', 'M9-E2E: claim version',
   'new-owner', 11, CURRENT_TIMESTAMP
 );
-DELETE FROM rims_dev_fixture_attachment_cleanup
+UPDATE rims_dev_fixture_attachment_cleanup
+SET completed_at = CURRENT_TIMESTAMP,
+    claim_token = NULL,
+    claimed_at = NULL
 WHERE object_key = '${lease_version_key}'
   AND claim_token = 'old-owner'
-  AND claim_version = 10;"
+  AND claim_version = 10
+  AND completed_at IS NULL;"
 assert_eq "$(sql "SELECT concat_ws('|', claim_token, claim_version) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}'")" \
 	"new-owner|11" "old owner finalize fencing"
 sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}';"
@@ -971,10 +1149,15 @@ reset_fingerprint="$(fixture_fingerprint)"
 assert_eq "${reset_fingerprint}" "${second_fingerprint}" "fixture fingerprint after reset"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE remark = 'M9-E2E: reset probe'")" "0" "M9 E2E reset probe cleanup"
 assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${reset_probe_object_key}'")" "0" "M9 E2E attachment row cleanup"
-assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup")" "0" "pending fixture attachment cleanup"
+assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup WHERE completed_at IS NULL")" \
+	"0" "pending fixture attachment cleanup"
+assert_eq "$(sql "SELECT concat_ws('|', completed_at IS NOT NULL, claim_token IS NULL, claimed_at IS NULL)
+FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${reset_probe_object_key}'")" \
+	"t|t|t" "retained fixture cleanup tombstone"
 [[ ! -e "${RESET_PROBE_FIXTURE_FILE}" ]] || fail "M9 E2E attachment file survived reset"
 [[ -f "${RESET_PROBE_NON_FIXTURE_FILE}" ]] || fail "reset removed a non-fixture attachment file"
 assert_eq "$(sql "SELECT count(*) FROM products WHERE code NOT LIKE 'M9-%'")" "${non_fixture_products_before}" "non-fixture products after reset"
 assert_eq "$(sql "SELECT count(*) FROM documents WHERE doc_no NOT LIKE 'M9DOC%' AND remark NOT LIKE 'M9-E2E:%'")" "${non_fixture_documents_before}" "non-fixture documents after reset"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${reset_probe_object_key}';"
 
 echo "M9 development seed idempotency and reset test passed: ${reset_fingerprint}"

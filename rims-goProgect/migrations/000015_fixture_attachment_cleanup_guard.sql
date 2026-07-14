@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
     claim_token VARCHAR(128),
     claim_version BIGINT NOT NULL DEFAULT 0,
     claimed_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
     queued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT rims_dev_fixture_attachment_cleanup_source_check CHECK (
       source_doc_no LIKE 'M9DOC%'
@@ -21,6 +22,7 @@ ALTER TABLE rims_dev_fixture_attachment_cleanup
   ADD COLUMN IF NOT EXISTS claim_token VARCHAR(128),
   ADD COLUMN IF NOT EXISTS claim_version BIGINT,
   ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ;
 
 UPDATE rims_dev_fixture_attachment_cleanup
@@ -54,9 +56,27 @@ BEGIN
 END;
 $$;
 
-CREATE INDEX IF NOT EXISTS idx_rims_dev_fixture_cleanup_claim_lease
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'rims_dev_fixture_attachment_cleanup'::regclass
+          AND conname = 'rims_dev_fixture_attachment_cleanup_completed_claim_check'
+    ) THEN
+        ALTER TABLE rims_dev_fixture_attachment_cleanup
+          ADD CONSTRAINT rims_dev_fixture_attachment_cleanup_completed_claim_check CHECK (
+            completed_at IS NULL
+            OR (claim_token IS NULL AND claimed_at IS NULL)
+          );
+    END IF;
+END;
+$$;
+
+DROP INDEX IF EXISTS idx_rims_dev_fixture_cleanup_claim_lease;
+CREATE INDEX idx_rims_dev_fixture_cleanup_claim_lease
 ON rims_dev_fixture_attachment_cleanup (claimed_at)
-WHERE claim_token IS NOT NULL;
+WHERE completed_at IS NULL AND claim_token IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION rims_guard_fixture_attachment_object_key()
 RETURNS trigger
@@ -70,7 +90,7 @@ BEGIN
         FROM rims_dev_fixture_attachment_cleanup
         WHERE object_key = NEW.object_key
     ) THEN
-        RAISE EXCEPTION 'pending fixture cleanup owns object key; attachment create must retry later';
+        RAISE EXCEPTION 'fixture cleanup history owns object key; attachment create cannot reuse it';
     END IF;
 
     IF NEW.business_type = 'doc_attachment' AND NEW.business_id IS NOT NULL THEN

@@ -142,7 +142,8 @@ SET claim_token = NULL,
 	claimed_at = NULL
 WHERE object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
   AND claim_token = :'claim_token'
-  AND claim_version = :'claim_version'::bigint;
+  AND claim_version = :'claim_version'::bigint
+  AND completed_at IS NULL;
 COMMIT;
 SQL
 				)"; then
@@ -202,6 +203,7 @@ CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
     claim_token VARCHAR(128),
     claim_version BIGINT NOT NULL DEFAULT 0,
     claimed_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
     queued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT rims_dev_fixture_attachment_cleanup_source_check CHECK (
       source_doc_no LIKE 'M9DOC%'
@@ -212,7 +214,8 @@ CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
 ALTER TABLE rims_dev_fixture_attachment_cleanup
   ADD COLUMN IF NOT EXISTS claim_token VARCHAR(128),
   ADD COLUMN IF NOT EXISTS claim_version BIGINT NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
 INSERT INTO m9_reset_documents (id, doc_no, remark)
 SELECT id, doc_no, COALESCE(remark, '')
@@ -281,9 +284,12 @@ UPDATE rims_dev_fixture_attachment_cleanup AS pending
 SET claim_token = :'claim_token',
     claim_version = pending.claim_version + 1,
     claimed_at = CURRENT_TIMESTAMP
-WHERE pending.claim_token IS NULL
-   OR pending.claimed_at IS NULL
-   OR pending.claimed_at < CURRENT_TIMESTAMP - :'claim_lease'::interval;
+WHERE pending.completed_at IS NULL
+  AND (
+    pending.claim_token IS NULL
+    OR pending.claimed_at IS NULL
+    OR pending.claimed_at < CURRENT_TIMESTAMP - :'claim_lease'::interval
+  );
 
 SELECT 'RIMS_M9_RESET_OBJECT_KEY ' || replace(
   encode(convert_to(object_key, 'UTF8'), 'base64'),
@@ -335,6 +341,7 @@ FROM rims_dev_fixture_attachment_cleanup AS pending
 JOIN file_attachments AS attachment
   ON attachment.object_key = pending.object_key
 WHERE pending.claim_token = :'claim_token'
+  AND pending.completed_at IS NULL
   AND attachment.deleted_at IS NULL;
 COMMIT;
 SQL
@@ -370,6 +377,7 @@ WITH entitled AS (
   WHERE pending.object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
     AND pending.claim_token = :'claim_token'
     AND pending.claim_version = :'claim_version'::bigint
+    AND pending.completed_at IS NULL
     AND pending.claimed_at >= CURRENT_TIMESTAMP - :'claim_lease'::interval
     AND NOT EXISTS (
       SELECT 1
@@ -407,28 +415,47 @@ SQL
 		fail "M9 attachment files remain after reset; cleanup responsibility remains in PostgreSQL"
 	for index in "${!reset_object_keys[@]}"; do
 		encoded_key="$(printf '%s' "${reset_object_keys[index]}" | base64 | tr -d '\n')"
-		"${PSQL[@]}" -qAt \
+		finalize_claim_output="$("${PSQL[@]}" -qAt \
 			-v claim_token="${reset_claim_token}" \
 			-v claim_version="${reset_claim_versions[index]}" \
 			-v object_key_b64="${encoded_key}" \
 			-v advisory_lock_timeout="${advisory_lock_timeout}" \
-			-f - >/dev/null <<'SQL'
+			-f - <<'SQL'
 BEGIN;
 SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
 LOCK TABLE file_attachments IN SHARE ROW EXCLUSIVE MODE;
-DELETE FROM rims_dev_fixture_attachment_cleanup AS pending
-WHERE pending.object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
-  AND pending.claim_token = :'claim_token'
-  AND pending.claim_version = :'claim_version'::bigint
-  AND NOT EXISTS (
-    SELECT 1
-    FROM file_attachments AS attachment
-    WHERE attachment.object_key = pending.object_key
-      AND attachment.deleted_at IS NULL
-  );
+WITH finalized AS (
+  UPDATE rims_dev_fixture_attachment_cleanup AS pending
+  SET completed_at = CURRENT_TIMESTAMP,
+      claim_token = NULL,
+      claimed_at = NULL
+  WHERE pending.object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
+    AND pending.claim_token = :'claim_token'
+    AND pending.claim_version = :'claim_version'::bigint
+    AND pending.completed_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM file_attachments AS attachment
+      WHERE attachment.object_key = pending.object_key
+        AND attachment.deleted_at IS NULL
+    )
+  RETURNING 1
+)
+SELECT 'RIMS_M9_FINALIZED_TOMBSTONE ' || count(*) FROM finalized;
 COMMIT;
 SQL
+		)"
+		finalized_tombstone_count=-1
+		while IFS= read -r finalized_line; do
+			case "${finalized_line}" in
+				'RIMS_M9_FINALIZED_TOMBSTONE '*)
+					finalized_tombstone_count=${finalized_line#RIMS_M9_FINALIZED_TOMBSTONE }
+					;;
+			esac
+		done <<< "${finalize_claim_output}"
+		[[ "${finalized_tombstone_count}" == 1 ]] ||
+			fail "lost M9 attachment finalize entitlement for ${reset_object_keys[index]}"
 	done
 	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
 BEGIN;
@@ -438,9 +465,14 @@ LOCK TABLE documents, inventory_transactions, file_attachments
   IN SHARE ROW EXCLUSIVE MODE;
 SELECT 'RIMS_M9_CLAIMED_PENDING_COUNT ' || count(*)
 FROM rims_dev_fixture_attachment_cleanup
-WHERE claim_token = :'claim_token';
+WHERE completed_at IS NULL
+  AND claim_token = :'claim_token';
 SELECT 'RIMS_M9_PENDING_ATTACHMENT_COUNT ' || count(*)
-FROM rims_dev_fixture_attachment_cleanup;
+FROM rims_dev_fixture_attachment_cleanup
+WHERE completed_at IS NULL;
+SELECT 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT ' || count(*)
+FROM rims_dev_fixture_attachment_cleanup
+WHERE completed_at IS NOT NULL;
 SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
   'namespaceDocuments', (
     SELECT count(*)
@@ -478,6 +510,7 @@ SQL
 )"
 	claimed_pending_count=-1
 	pending_attachment_count=-1
+	tombstone_attachment_count=-1
 	reset_counts_seen=false
 	reset_namespace_documents=-1
 	reset_namespace_transactions=-1
@@ -490,6 +523,9 @@ SQL
 				;;
 			'RIMS_M9_PENDING_ATTACHMENT_COUNT '*)
 				pending_attachment_count=${finalize_line#RIMS_M9_PENDING_ATTACHMENT_COUNT }
+				;;
+			'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT '*)
+				tombstone_attachment_count=${finalize_line#RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT }
 				;;
 			'RIMS_M9_RESET_COUNTS '*)
 				reset_counts_json=${finalize_line#RIMS_M9_RESET_COUNTS }
@@ -509,6 +545,8 @@ SQL
 		fail "this reset still owns incomplete attachment cleanup responsibility"
 	[[ "${pending_attachment_count}" =~ ^[0-9]+$ && "${pending_attachment_count}" -eq 0 ]] ||
 		fail "M9 attachment cleanup responsibility remains after reset"
+	[[ "${tombstone_attachment_count}" =~ ^[0-9]+$ ]] ||
+		fail "M9 reset omitted retained attachment tombstone evidence"
 	[[ "${reset_counts_seen}" == true ]] ||
 		fail "M9 reset omitted final database count evidence"
 	[[ "${reset_namespace_documents}" -eq 0 &&
@@ -516,6 +554,8 @@ SQL
 		"${reset_namespace_attachments}" -eq 0 ]] ||
 		fail "M9 reset database namespace cleanup is incomplete"
 	printf '%s\n' "${reset_counts_line}"
+	printf 'RIMS_M9_CLEANUP_COUNTS {"pending":%d,"tombstones":%d}\n' \
+		"${pending_attachment_count}" "${tombstone_attachment_count}"
 	reset_claim_active=false
 	trap - EXIT
 	rm -f -- "${reset_manifest}"

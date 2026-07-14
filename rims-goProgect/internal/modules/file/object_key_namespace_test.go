@@ -5,6 +5,7 @@ package file
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,15 @@ import (
 type namespaceFileRepo struct {
 	aclFileRepoStub
 	fixture bool
+}
+
+type rejectingNamespaceRepo struct {
+	namespaceFileRepo
+	createErr error
+}
+
+func (r *rejectingNamespaceRepo) Create(context.Context, *FileAttachment) error {
+	return r.createErr
 }
 
 func (r *namespaceFileRepo) IsFixtureAttachmentBinding(context.Context, string, uint) (bool, error) {
@@ -74,6 +84,32 @@ func TestUploadKeepsOrdinaryBindingOutsideFixtureNamespace(t *testing.T) {
 	}
 	if strings.HasPrefix(record.ObjectKey, "m9-e2e/") {
 		t.Fatalf("ordinary object key entered fixture namespace: %q", record.ObjectKey)
+	}
+}
+
+func TestUploadDeletesStoredObjectWhenCleanupHistoryRejectsAttachmentCreate(t *testing.T) {
+	businessID := uint(45)
+	repo := &rejectingNamespaceRepo{
+		namespaceFileRepo: namespaceFileRepo{fixture: false},
+		createErr:         errors.New("fixture cleanup history owns object key"),
+	}
+	storage := &mutationStorage{}
+	svc := NewFileService(repo, storage, 10, ".txt", "/files/%d/download", &aclCheckerStub{allowed: true})
+
+	_, err := svc.Upload(context.Background(), FileActor{UserID: 7}, UploadRequest{
+		BusinessType: BusinessTypeDocAttachment,
+		BusinessID:   &businessID,
+		OriginalName: "ordinary.txt",
+		Reader:       strings.NewReader("ordinary attachment"),
+	})
+	if err == nil {
+		t.Fatal("Upload succeeded after repository rejected the tombstoned object key")
+	}
+	if len(storage.saved) != 1 || len(storage.deleted) != 1 || storage.saved[0] != storage.deleted[0] {
+		t.Fatalf("stored-object rollback saved/deleted = %v/%v, want the rejected key deleted", storage.saved, storage.deleted)
+	}
+	if strings.HasPrefix(storage.saved[0], "m9-e2e/") {
+		t.Fatalf("ordinary rollback test unexpectedly used fixture namespace: %q", storage.saved[0])
 	}
 }
 
