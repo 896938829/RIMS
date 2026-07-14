@@ -27,11 +27,31 @@ assert_eq() {
 [[ -f "${SEED_SCRIPT}" ]] || fail "seed script not found: ${SEED_SCRIPT}"
 SEED_SQL="${SCRIPT_DIR}/m9_dev_seed.sql"
 [[ -f "${SEED_SQL}" ]] || fail "seed SQL not found: ${SEED_SQL}"
+CLEANUP_GUARD_MIGRATION="${REPO_ROOT}/migrations/000015_fixture_attachment_cleanup_guard.sql"
+[[ -f "${CLEANUP_GUARD_MIGRATION}" ]] || fail "fixture attachment cleanup guard migration is missing"
+for guard_fragment in \
+	'CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup' \
+	'BEFORE INSERT OR UPDATE OF object_key' \
+	"object_key LIKE 'm9-e2e/%'" \
+	'RAISE EXCEPTION' \
+	'rims_dev_fixture_attachment_cleanup'; do
+	grep -Fq "${guard_fragment}" "${CLEANUP_GUARD_MIGRATION}" ||
+		fail "fixture attachment cleanup guard migration missing ${guard_fragment}"
+done
+for lease_fragment in \
+	'RIMS_M9_CLAIM_LEASE_MS' \
+	"claimed_at < CURRENT_TIMESTAMP - :'claim_lease'::interval" \
+	"pending.claim_version = :'claim_version'::bigint" \
+	"set_config('statement_timeout', :'cleanup_statement_timeout', true)" \
+	'M9 cleanup release failed'; do
+	grep -Fq "${lease_fragment}" "${SEED_SCRIPT}" ||
+		fail "reset cleanup lease protocol missing ${lease_fragment}"
+done
 for lock_file in "${SEED_SCRIPT}" "${SEED_SQL}"; do
 	grep -Fq 'pg_advisory_xact_lock(908130011)' "${lock_file}" ||
 		fail "fixture namespace advisory lock missing from ${lock_file}"
 	lock_count="$(grep -Fc 'pg_advisory_xact_lock(908130011)' "${lock_file}")"
-	timeout_count="$(grep -Fc "set_config('lock_timeout', :'advisory_lock_timeout', true)" "${lock_file}")"
+	timeout_count="$(grep -Fc "set_config('lock_timeout'" "${lock_file}")"
 	assert_eq "${timeout_count}" "${lock_count}" "fixture advisory lock deadline coverage in ${lock_file}"
 done
 if grep -Eq '^DELETE FROM rims_dev_fixture_attachment_cleanup;[[:space:]]*$' "${SEED_SCRIPT}"; then
@@ -156,7 +176,7 @@ retry_dir="${GUARD_TMP_DIR}/physical-retry"
 retry_bin="${retry_dir}/bin"
 retry_uploads="${retry_dir}/uploads"
 retry_state="${retry_dir}/state"
-retry_object_key="2026/07/m11-retry.bin"
+retry_object_key="m9-e2e/2026/07/m11-retry.bin"
 retry_object_path="${retry_uploads}/${retry_object_key}"
 mkdir -p "${retry_bin}" "$(dirname "${retry_object_path}")" "${retry_state}"
 printf 'retry fixture attachment\n' > "${retry_object_path}"
@@ -172,11 +192,11 @@ elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	if [[ ! -e "${state_dir}/db-row-deleted" ]]; then
 		touch "${state_dir}/db-row-deleted" "${state_dir}/pending"
 		printf '%s' "${object_key}" | base64 | tr -d '\n' |
-			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 1\n'
 	elif [[ "${input}" == *"rims_dev_fixture_attachment_cleanup"* &&
 		-e "${state_dir}/pending" ]]; then
 		printf '%s' "${object_key}" | base64 | tr -d '\n' |
-			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 2\n'
 	fi
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
@@ -247,7 +267,7 @@ shared_key_dir="${GUARD_TMP_DIR}/shared-key"
 shared_key_bin="${shared_key_dir}/bin"
 shared_key_uploads="${shared_key_dir}/uploads"
 shared_key_state="${shared_key_dir}/state"
-shared_object_key="2026/07/shared-key.bin"
+shared_object_key="m9-e2e/2026/07/shared-key.bin"
 shared_object_path="${shared_key_uploads}/${shared_object_key}"
 mkdir -p "${shared_key_bin}" "$(dirname "${shared_object_path}")" "${shared_key_state}"
 touch "${shared_key_state}/pending" "${shared_key_state}/ordinary-reference"
@@ -262,7 +282,7 @@ if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 	printf '%s\n' '{"namespaceAttachmentFiles":0}'
 elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s' "${object_key}" | base64 | tr -d '\n' |
-		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 1\n'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 1'
@@ -298,7 +318,7 @@ concurrent_dir="${GUARD_TMP_DIR}/concurrent-pending"
 concurrent_bin="${concurrent_dir}/bin"
 concurrent_uploads="${concurrent_dir}/uploads"
 concurrent_state="${concurrent_dir}/state"
-concurrent_object_key="2026/07/claimed-a.bin"
+concurrent_object_key="m9-e2e/2026/07/claimed-a.bin"
 concurrent_object_path="${concurrent_uploads}/${concurrent_object_key}"
 mkdir -p "${concurrent_bin}" "$(dirname "${concurrent_object_path}")" "${concurrent_state}"
 touch "${concurrent_state}/pending-a"
@@ -316,7 +336,7 @@ if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 	printf '%s\n' '{"namespaceAttachmentFiles":0}'
 elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	printf '%s' "${object_key}" | base64 | tr -d '\n' |
-		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 1\n'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
@@ -353,6 +373,71 @@ fi
 	fail "reset cleared another instance's concurrent pending responsibility"
 [[ ! -e "${concurrent_state}/concurrent-row-cleared" ]] ||
 	fail "reset used an unconditional pending-table delete"
+
+cleanup_timeout_dir="${GUARD_TMP_DIR}/cleanup-timeout"
+cleanup_timeout_bin="${cleanup_timeout_dir}/bin"
+cleanup_timeout_uploads="${cleanup_timeout_dir}/uploads"
+cleanup_timeout_state="${cleanup_timeout_dir}/state"
+cleanup_timeout_key="m9-e2e/2026/07/cleanup-timeout.bin"
+cleanup_timeout_path="${cleanup_timeout_uploads}/${cleanup_timeout_key}"
+cleanup_timeout_log="${cleanup_timeout_dir}/reset.log"
+mkdir -p "${cleanup_timeout_bin}" "$(dirname "${cleanup_timeout_path}")" "${cleanup_timeout_state}"
+printf 'cleanup timeout attachment\n' > "${cleanup_timeout_path}"
+cat > "${cleanup_timeout_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_CLEANUP_TIMEOUT_STATE:?}
+object_key=${RIMS_TEST_CLEANUP_TIMEOUT_KEY:?}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ " $* " == *" -v cleanup_statement_timeout="* &&
+	"${input}" == *"UPDATE rims_dev_fixture_attachment_cleanup"* ]]; then
+	touch "${state_dir}/release-attempted"
+	printf '%s\n' 'ERROR: canceling statement due to lock timeout' >&2
+	exit 55
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s' "${object_key}" | base64 | tr -d '\n' |
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s 7\n'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+fi
+EOF
+cat > "${cleanup_timeout_bin}/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${!#}" == "${RIMS_TEST_CLEANUP_TIMEOUT_PATH:?}" ]]; then
+	printf '%s\n' 'injected primary rm failure' >&2
+	exit 73
+fi
+exec /bin/rm "$@"
+EOF
+chmod +x "${cleanup_timeout_bin}/psql" "${cleanup_timeout_bin}/rm"
+write_guard_env "${cleanup_timeout_dir}/test.env" "test" "127.0.0.1" "appdb"
+set +e
+PATH="${cleanup_timeout_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${cleanup_timeout_dir}/test.env" \
+	RIMS_M9_CLEANUP_TIMEOUT_MS=100 \
+	UPLOAD_DIR="${cleanup_timeout_uploads}" \
+	RIMS_TEST_CLEANUP_TIMEOUT_STATE="${cleanup_timeout_state}" \
+	RIMS_TEST_CLEANUP_TIMEOUT_KEY="${cleanup_timeout_key}" \
+	RIMS_TEST_CLEANUP_TIMEOUT_PATH="${cleanup_timeout_path}" \
+	bash "${SEED_SCRIPT}" --reset >"${cleanup_timeout_log}" 2>&1
+cleanup_timeout_exit=$?
+set -e
+[[ "${cleanup_timeout_exit}" -ne 0 ]] || fail "reset hid its primary failure and cleanup lock timeout"
+grep -Fq "failed to remove M9 attachment ${cleanup_timeout_key}" "${cleanup_timeout_log}" ||
+	fail "reset log lost the first business failure"
+grep -Fq 'M9 cleanup release failed' "${cleanup_timeout_log}" ||
+	fail "reset log omitted the cleanup failure"
+grep -Fqi 'lock timeout' "${cleanup_timeout_log}" ||
+	fail "reset cleanup failure was not diagnosable as a lock timeout"
+[[ -e "${cleanup_timeout_state}/release-attempted" ]] ||
+	fail "reset did not attempt bounded claim release after its business failure"
+[[ -f "${cleanup_timeout_path}" ]] ||
+	fail "cleanup timeout test unexpectedly deleted the claimed attachment"
 
 namespace_race_dir="${GUARD_TMP_DIR}/namespace-race"
 namespace_race_bin="${namespace_race_dir}/bin"
@@ -475,6 +560,106 @@ fi
 sql() {
 	"${PSQL[@]}" -c "$1"
 }
+
+"${PSQL[@]}" -f - < "${CLEANUP_GUARD_MIGRATION}" >/dev/null
+
+guard_suffix="$$-${RANDOM}"
+guard_ordinary_key="2026/07/ordinary-after-check-${guard_suffix}.bin"
+sql "DELETE FROM file_attachments WHERE object_key = '${guard_ordinary_key}';
+DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${guard_ordinary_key}';
+DELETE FROM documents WHERE doc_no = 'M9-GUARD-ORDINARY-${guard_suffix}';
+INSERT INTO documents (
+  doc_no, doc_type, status, warehouse_id, remark, created_by, updated_by
+)
+SELECT 'M9-GUARD-ORDINARY-${guard_suffix}', 2, 1, w.id,
+       'ordinary attachment inserted after cleanup reference check', u.id, u.id
+FROM warehouses w, users u
+WHERE w.code = 'WH001' AND w.deleted_at IS NULL
+  AND u.username = 'admin' AND u.deleted_at IS NULL;
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark
+) VALUES (
+  '${guard_ordinary_key}', 1, 'M9DOC-TOCTOU-GUARD', 'M9-E2E: post-check insert guard'
+);"
+set +e
+guard_insert_log="$(sql "INSERT INTO file_attachments (
+  business_type, business_id, object_key, file_url, original_name,
+  file_size, file_hash, mime_type, created_by, updated_by
+)
+SELECT 'doc_attachment', d.id, '${guard_ordinary_key}',
+       '/uploads/${guard_ordinary_key}', 'ordinary.bin', 8, repeat('b', 64),
+       'application/octet-stream', d.created_by, d.updated_by
+FROM documents d WHERE d.doc_no = 'M9-GUARD-ORDINARY-${guard_suffix}';" 2>&1)"
+guard_insert_exit=$?
+set -e
+[[ "${guard_insert_exit}" -ne 0 ]] ||
+	fail "ordinary attachment entered the reserved fixture namespace after cleanup check"
+grep -Fq 'pending fixture cleanup owns object key' <<< "${guard_insert_log}" ||
+	fail "post-check pending-key rejection was not diagnosable"
+assert_eq "$(sql "SELECT count(*) FROM file_attachments WHERE object_key = '${guard_ordinary_key}'")" "0" \
+	"ordinary pending-key attachment rejection"
+assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${guard_ordinary_key}'")" "1" \
+	"post-check cleanup ownership preservation"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${guard_ordinary_key}';
+DELETE FROM documents WHERE doc_no = 'M9-GUARD-ORDINARY-${guard_suffix}';"
+
+lease_active_key="m9-e2e/lease-active-${guard_suffix}.bin"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_active_key}';
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark,
+  claim_token, claim_version, claimed_at
+) VALUES (
+  '${lease_active_key}', 1, 'M9DOC-LEASE-ACTIVE', 'M9-E2E: active lease',
+  'active-owner', 9, CURRENT_TIMESTAMP
+);"
+active_lease_log="${GUARD_TMP_DIR}/active-lease.log"
+if RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_CLAIM_LEASE_MS=60000 bash "${SEED_SCRIPT}" --reset >"${active_lease_log}" 2>&1; then
+	fail "reset reported success while another cleanup claim lease was active"
+fi
+assert_eq "$(sql "SELECT concat_ws('|', claim_token, claim_version) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_active_key}'")" \
+	"active-owner|9" "unexpired cleanup claim ownership"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_active_key}';"
+
+lease_expired_key="m9-e2e/lease-expired-${guard_suffix}.bin"
+lease_expired_upload_dir="${UPLOAD_DIR:-./uploads}"
+if [[ "${lease_expired_upload_dir}" != /* ]]; then
+	lease_expired_upload_dir="${REPO_ROOT}/${lease_expired_upload_dir#./}"
+fi
+lease_expired_upload_dir="$(realpath -m -- "${lease_expired_upload_dir}")"
+lease_expired_path="${lease_expired_upload_dir}/${lease_expired_key}"
+mkdir -p "$(dirname "${lease_expired_path}")"
+printf 'expired lease bytes\n' > "${lease_expired_path}"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}';
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark,
+  claim_token, claim_version, claimed_at
+) VALUES (
+  '${lease_expired_key}', 1, 'M9DOC-LEASE-EXPIRED', 'M9-E2E: expired lease',
+  'killed-owner', 9, CURRENT_TIMESTAMP - INTERVAL '1 hour'
+);"
+RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${ENV_FILE}" \
+	RIMS_M9_CLAIM_LEASE_MS=1000 bash "${SEED_SCRIPT}" --reset >/dev/null
+assert_eq "$(sql "SELECT count(*) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_expired_key}'")" \
+	"0" "expired cleanup claim reclamation"
+[[ ! -e "${lease_expired_path}" ]] || fail "expired cleanup claim did not delete its fixture bytes"
+
+lease_version_key="m9-e2e/lease-version-${guard_suffix}.bin"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}';
+INSERT INTO rims_dev_fixture_attachment_cleanup (
+  object_key, source_document_id, source_doc_no, source_remark,
+  claim_token, claim_version, claimed_at
+) VALUES (
+  '${lease_version_key}', 1, 'M9DOC-LEASE-VERSION', 'M9-E2E: claim version',
+  'new-owner', 11, CURRENT_TIMESTAMP
+);
+DELETE FROM rims_dev_fixture_attachment_cleanup
+WHERE object_key = '${lease_version_key}'
+  AND claim_token = 'old-owner'
+  AND claim_version = 10;"
+assert_eq "$(sql "SELECT concat_ws('|', claim_token, claim_version) FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}'")" \
+	"new-owner|11" "old owner finalize fencing"
+sql "DELETE FROM rims_dev_fixture_attachment_cleanup WHERE object_key = '${lease_version_key}';"
 
 lock_holder_log="${GUARD_TMP_DIR}/advisory-lock-holder.log"
 timeout 3s "${PSQL[@]}" -c "

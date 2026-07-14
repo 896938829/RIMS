@@ -76,6 +76,21 @@ advisory_lock_timeout_ms="${RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS:-5000}"
 	fail "RIMS_M9_ADVISORY_LOCK_TIMEOUT_MS must be between 50 and 60000"
 advisory_lock_timeout="${advisory_lock_timeout_ms}ms"
 
+claim_lease_ms="${RIMS_M9_CLAIM_LEASE_MS:-300000}"
+[[ "${claim_lease_ms}" =~ ^[0-9]+$ ]] ||
+	fail "RIMS_M9_CLAIM_LEASE_MS must be an integer"
+(( claim_lease_ms >= 1000 && claim_lease_ms <= 3600000 )) ||
+	fail "RIMS_M9_CLAIM_LEASE_MS must be between 1000 and 3600000"
+claim_lease="${claim_lease_ms} milliseconds"
+
+cleanup_timeout_ms="${RIMS_M9_CLEANUP_TIMEOUT_MS:-1000}"
+[[ "${cleanup_timeout_ms}" =~ ^[0-9]+$ ]] ||
+	fail "RIMS_M9_CLEANUP_TIMEOUT_MS must be an integer"
+(( cleanup_timeout_ms >= 50 && cleanup_timeout_ms <= 60000 )) ||
+	fail "RIMS_M9_CLEANUP_TIMEOUT_MS must be between 50 and 60000"
+cleanup_lock_timeout="${cleanup_timeout_ms}ms"
+cleanup_statement_timeout="${cleanup_timeout_ms}ms"
+
 export PGPASSWORD="${DB_PASSWORD:?DB_PASSWORD is required}"
 if command -v psql >/dev/null 2>&1; then
 	PSQL=(
@@ -102,15 +117,45 @@ fi
 if [[ "${MODE}" == "--reset" ]]; then
 	reset_claim_token="m9-reset-$(date +%s)-$$-${RANDOM}-${RANDOM}"
 	reset_claim_active=false
+	reset_object_keys=()
+	reset_claim_versions=()
 	release_reset_claim() {
+		local original_status=$?
+		local cleanup_failed=false cleanup_output='' encoded_key='' index=0
+		trap - EXIT
 		if [[ "${reset_claim_active}" == true ]]; then
-			"${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - >/dev/null 2>&1 <<'SQL' || true
+			for index in "${!reset_object_keys[@]}"; do
+				encoded_key="$(printf '%s' "${reset_object_keys[index]}" | base64 | tr -d '\n')"
+				if ! cleanup_output="$("${PSQL[@]}" -qAt \
+					-v claim_token="${reset_claim_token}" \
+					-v claim_version="${reset_claim_versions[index]}" \
+					-v object_key_b64="${encoded_key}" \
+					-v cleanup_lock_timeout="${cleanup_lock_timeout}" \
+					-v cleanup_statement_timeout="${cleanup_statement_timeout}" \
+					-f - 2>&1 <<'SQL'
+BEGIN;
+SELECT set_config('lock_timeout', :'cleanup_lock_timeout', true);
+SELECT set_config('statement_timeout', :'cleanup_statement_timeout', true);
+SELECT pg_advisory_xact_lock(908130011);
 UPDATE rims_dev_fixture_attachment_cleanup
 SET claim_token = NULL,
-    claimed_at = NULL
-WHERE claim_token = :'claim_token';
+	claimed_at = NULL
+WHERE object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
+  AND claim_token = :'claim_token'
+  AND claim_version = :'claim_version'::bigint;
+COMMIT;
 SQL
+				)"; then
+					cleanup_failed=true
+					printf 'M9 cleanup release failed for %s after exit status %d: %s\n' \
+						"${reset_object_keys[index]}" "${original_status}" "${cleanup_output}" >&2
+				fi
+			done
 		fi
+		if [[ "${cleanup_failed}" == true && "${original_status}" -eq 0 ]]; then
+			original_status=1
+		fi
+		exit "${original_status}"
 	}
 	trap release_reset_claim EXIT
 	upload_dir="${UPLOAD_DIR:-./uploads}"
@@ -131,7 +176,7 @@ SQL
 		echo "Ignoring untrusted M9 reset manifest; deletion ownership is derived from PostgreSQL." >&2
 	fi
 
-	reset_sql_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
+	reset_sql_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v claim_lease="${claim_lease}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
 BEGIN;
 
 SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
@@ -232,17 +277,19 @@ WHERE username = 'm9_operator';
 DELETE FROM warehouses
 WHERE code = 'M9-WH-02';
 
-UPDATE rims_dev_fixture_attachment_cleanup
+UPDATE rims_dev_fixture_attachment_cleanup AS pending
 SET claim_token = :'claim_token',
-    claim_version = claim_version + 1,
+    claim_version = pending.claim_version + 1,
     claimed_at = CURRENT_TIMESTAMP
-WHERE claim_token IS NULL;
+WHERE pending.claim_token IS NULL
+   OR pending.claimed_at IS NULL
+   OR pending.claimed_at < CURRENT_TIMESTAMP - :'claim_lease'::interval;
 
 SELECT 'RIMS_M9_RESET_OBJECT_KEY ' || replace(
   encode(convert_to(object_key, 'UTF8'), 'base64'),
   E'\n',
   ''
-)
+) || ' ' || claim_version
 FROM rims_dev_fixture_attachment_cleanup
 WHERE claim_token = :'claim_token'
 ORDER BY object_key;
@@ -251,14 +298,18 @@ COMMIT;
 SQL
 )"
 	reset_claim_active=true
-	reset_object_keys=()
 	while IFS= read -r reset_line; do
 		case "${reset_line}" in
 			'RIMS_M9_RESET_OBJECT_KEY '*)
-				encoded_key=${reset_line#RIMS_M9_RESET_OBJECT_KEY }
+				claim_record=${reset_line#RIMS_M9_RESET_OBJECT_KEY }
+				encoded_key=${claim_record% *}
+				claim_version=${claim_record##* }
+				[[ "${claim_version}" =~ ^[1-9][0-9]*$ ]] ||
+					fail "invalid database-produced M9 attachment claim version"
 				object_key="$(printf '%s' "${encoded_key}" | base64 --decode)" ||
 					fail "invalid database-produced M9 attachment key encoding"
 				reset_object_keys+=("${object_key}")
+				reset_claim_versions+=("${claim_version}")
 				;;
 		esac
 	done <<< "${reset_sql_output}"
@@ -312,20 +363,37 @@ SQL
 	done
 	[[ "${namespace_attachment_files}" -eq 0 ]] ||
 		fail "M9 attachment files remain after reset; cleanup responsibility remains in PostgreSQL"
-	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
+	for index in "${!reset_object_keys[@]}"; do
+		encoded_key="$(printf '%s' "${reset_object_keys[index]}" | base64 | tr -d '\n')"
+		"${PSQL[@]}" -qAt \
+			-v claim_token="${reset_claim_token}" \
+			-v claim_version="${reset_claim_versions[index]}" \
+			-v object_key_b64="${encoded_key}" \
+			-v advisory_lock_timeout="${advisory_lock_timeout}" \
+			-f - >/dev/null <<'SQL'
 BEGIN;
 SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
 SELECT pg_advisory_xact_lock(908130011);
-LOCK TABLE documents, inventory_transactions, file_attachments
-  IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE file_attachments IN SHARE ROW EXCLUSIVE MODE;
 DELETE FROM rims_dev_fixture_attachment_cleanup AS pending
-WHERE pending.claim_token = :'claim_token'
+WHERE pending.object_key = convert_from(decode(:'object_key_b64', 'base64'), 'UTF8')
+  AND pending.claim_token = :'claim_token'
+  AND pending.claim_version = :'claim_version'::bigint
   AND NOT EXISTS (
     SELECT 1
     FROM file_attachments AS attachment
     WHERE attachment.object_key = pending.object_key
       AND attachment.deleted_at IS NULL
   );
+COMMIT;
+SQL
+	done
+	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -v advisory_lock_timeout="${advisory_lock_timeout}" -f - <<'SQL'
+BEGIN;
+SELECT set_config('lock_timeout', :'advisory_lock_timeout', true);
+SELECT pg_advisory_xact_lock(908130011);
+LOCK TABLE documents, inventory_transactions, file_attachments
+  IN SHARE ROW EXCLUSIVE MODE;
 SELECT 'RIMS_M9_CLAIMED_PENDING_COUNT ' || count(*)
 FROM rims_dev_fixture_attachment_cleanup
 WHERE claim_token = :'claim_token';

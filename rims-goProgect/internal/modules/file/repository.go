@@ -47,6 +47,23 @@ func (r *fileRepo) Create(ctx context.Context, f *FileAttachment) error {
 	return r.getDB(ctx).Create(f).Error
 }
 
+// IsFixtureAttachmentBinding reports whether a binding belongs to disposable
+// local M9 test data. Only those bindings may enter the reserved object-key namespace.
+func (r *fileRepo) IsFixtureAttachmentBinding(ctx context.Context, businessType string, businessID uint) (bool, error) {
+	if businessType != BusinessTypeDocAttachment || businessID == 0 {
+		return false, nil
+	}
+	var fixture bool
+	err := r.getDB(ctx).Raw(`
+SELECT EXISTS (
+  SELECT 1
+  FROM documents
+  WHERE id = ?
+    AND (doc_no LIKE 'M9DOC%' OR remark LIKE 'M9-E2E:%')
+)`, businessID).Scan(&fixture).Error
+	return fixture, err
+}
+
 func (r *fileRepo) Update(ctx context.Context, f *FileAttachment) error {
 	return r.getDB(ctx).Save(f).Error
 }

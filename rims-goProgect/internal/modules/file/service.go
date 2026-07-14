@@ -72,6 +72,10 @@ type bindingAttachmentCounter interface {
 	CountByBinding(ctx context.Context, businessType string, businessID uint) (int64, error)
 }
 
+type fixtureAttachmentBindingClassifier interface {
+	IsFixtureAttachmentBinding(ctx context.Context, businessType string, businessID uint) (bool, error)
+}
+
 type attachmentMutationRepository interface {
 	ListAllByBinding(ctx context.Context, businessType string, businessID uint) ([]FileAttachment, error)
 	MaxPositionByBinding(ctx context.Context, businessType string, businessID uint) (int, error)
@@ -165,6 +169,7 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 
 	isPublic := IsPublicBusinessType(businessType)
 	position := 0
+	fixtureBinding := false
 	if req.BusinessID != nil {
 		if err := s.authorizeBusinessBinding(ctx, actor, &FileAttachment{
 			BusinessType: businessType,
@@ -175,6 +180,13 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		}
 		if err := s.enforceAttachmentLimit(ctx, businessType, *req.BusinessID); err != nil {
 			return nil, err
+		}
+		if classifier, ok := s.repo.(fixtureAttachmentBindingClassifier); ok {
+			isFixture, err := classifier.IsFixtureAttachmentBinding(ctx, businessType, *req.BusinessID)
+			if err != nil {
+				return nil, types.ErrSystem(err)
+			}
+			fixtureBinding = isFixture
 		}
 		if mutationRepo, ok := s.repo.(attachmentMutationRepository); ok {
 			maxPosition, err := mutationRepo.MaxPositionByBinding(ctx, businessType, *req.BusinessID)
@@ -227,7 +239,7 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 	if err != nil {
 		return nil, types.ErrSystem(err)
 	}
-	objectKey := fmt.Sprintf("%04d/%02d/%s%s", now.Year(), int(now.Month()), randHex, ext)
+	objectKey := buildObjectKey(now, randHex, ext, fixtureBinding)
 
 	if err := s.storage.Save(ctx, objectKey, bytes.NewReader(buf.Bytes())); err != nil {
 		return nil, types.ErrSystem(err)
@@ -328,7 +340,16 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	if !actor.IsAdmin && original.CreatedBy != actor.UserID {
 		return nil, types.ErrForbidden()
 	}
-	prepared, err := s.prepareFileObject(ctx, req)
+	fixtureBinding := false
+	if original.BusinessID != nil {
+		if classifier, ok := s.repo.(fixtureAttachmentBindingClassifier); ok {
+			fixtureBinding, err = classifier.IsFixtureAttachmentBinding(ctx, original.BusinessType, *original.BusinessID)
+			if err != nil {
+				return nil, types.ErrSystem(err)
+			}
+		}
+	}
+	prepared, err := s.prepareFileObject(ctx, req, fixtureBinding)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +376,7 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	return &replacement, nil
 }
 
-func (s *FileService) prepareFileObject(ctx context.Context, req UploadRequest) (*preparedFileObject, error) {
+func (s *FileService) prepareFileObject(ctx context.Context, req UploadRequest, fixtureBinding bool) (*preparedFileObject, error) {
 	originalName := strings.TrimSpace(req.OriginalName)
 	if originalName == "" {
 		return nil, types.ErrValidation("文件名不能为空")
@@ -403,13 +424,21 @@ func (s *FileService) prepareFileObject(ctx context.Context, req UploadRequest) 
 		return nil, types.ErrSystem(err)
 	}
 	return &preparedFileObject{
-		objectKey:    fmt.Sprintf("%04d/%02d/%s%s", now.Year(), int(now.Month()), randHex, ext),
+		objectKey:    buildObjectKey(now, randHex, ext, fixtureBinding),
 		originalName: originalName,
 		content:      append([]byte(nil), buf.Bytes()...),
 		size:         written,
 		hash:         hex.EncodeToString(hasher.Sum(nil)),
 		mimeType:     mimeType,
 	}, nil
+}
+
+func buildObjectKey(now time.Time, randomSuffix, ext string, fixtureBinding bool) string {
+	prefix := ""
+	if fixtureBinding {
+		prefix = "m9-e2e/"
+	}
+	return fmt.Sprintf("%s%04d/%02d/%s%s", prefix, now.Year(), int(now.Month()), randomSuffix, ext)
 }
 
 func (s *FileService) enforceAttachmentLimit(ctx context.Context, businessType string, businessID uint) error {
