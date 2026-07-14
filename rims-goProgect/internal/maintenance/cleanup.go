@@ -5,7 +5,9 @@ package maintenance
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -17,6 +19,7 @@ const (
 	defaultAuditLogRetention    = 0
 	defaultCleanupBatchSize     = 1000
 	defaultStoragePrepareLease  = time.Hour
+	defaultStorageClaimLease    = 5 * time.Minute
 )
 
 type rowsScanner interface {
@@ -57,6 +60,7 @@ type Options struct {
 	FileDeletedRetention time.Duration
 	AuditLogRetention    time.Duration
 	StoragePrepareLease  time.Duration
+	StorageClaimLease    time.Duration
 	BatchSize            int
 	Now                  func() time.Time
 }
@@ -78,6 +82,7 @@ func DefaultOptions() Options {
 		FileDeletedRetention: defaultFileDeletedRetention,
 		AuditLogRetention:    defaultAuditLogRetention,
 		StoragePrepareLease:  defaultStoragePrepareLease,
+		StorageClaimLease:    defaultStorageClaimLease,
 		BatchSize:            defaultCleanupBatchSize,
 		Now:                  time.Now,
 	}
@@ -115,7 +120,11 @@ func (c *Cleaner) Run(ctx context.Context) (Result, error) {
 		return result, err
 	}
 	storageResult, err := c.cleanupPendingStorageObjects(
-		ctx, now.Add(-options.StoragePrepareLease), options.BatchSize,
+		ctx,
+		now.Add(-options.StoragePrepareLease),
+		now.Add(-options.StorageClaimLease),
+		now,
+		options.BatchSize,
 	)
 	result.StorageObjectsDeleted = storageResult.StorageObjectsDeleted
 	result.StorageTasksCleared = storageResult.StorageTasksCleared
@@ -140,15 +149,45 @@ func (c *Cleaner) Run(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
-func (c *Cleaner) cleanupPendingStorageObjects(ctx context.Context, preparationCutoff time.Time, batchSize int) (Result, error) {
+func (c *Cleaner) cleanupPendingStorageObjects(
+	ctx context.Context,
+	preparationCutoff time.Time,
+	claimCutoff time.Time,
+	now time.Time,
+	batchSize int,
+) (Result, error) {
 	if c.storage == nil {
 		return Result{}, fmt.Errorf("cleanup pending storage objects: storage is required")
 	}
-	const query = `SELECT object_key FROM file_storage_cleanup_queue
-WHERE ready_at IS NOT NULL OR queued_at < $1
-ORDER BY updated_at, object_key
-LIMIT $2`
-	rows, err := c.db.QueryContext(ctx, query, preparationCutoff, batchSize)
+	claimToken, err := storageCleanupToken()
+	if err != nil {
+		return Result{}, err
+	}
+	const query = `WITH candidates AS (
+  SELECT object_key
+  FROM file_storage_cleanup_queue
+  WHERE completed_at IS NULL
+    AND (
+      state = 'ready'
+      OR (state = 'prepared' AND queued_at < $1)
+      OR (state = 'claimed' AND claimed_at < $2)
+    )
+  ORDER BY updated_at, object_key
+  FOR UPDATE SKIP LOCKED
+  LIMIT $3
+), claimed AS (
+  UPDATE file_storage_cleanup_queue AS task
+  SET state = 'claimed',
+      claim_token = $4,
+      claim_version = task.claim_version + 1,
+      claimed_at = $5,
+      updated_at = $5
+  FROM candidates
+  WHERE task.object_key = candidates.object_key
+  RETURNING task.object_key, task.claim_version
+)
+SELECT object_key, claim_version FROM claimed ORDER BY object_key`
+	rows, err := c.db.QueryContext(ctx, query, preparationCutoff, claimCutoff, batchSize, claimToken, now)
 	if err != nil {
 		return Result{}, fmt.Errorf("select pending storage cleanup: %w", err)
 	}
@@ -157,7 +196,8 @@ LIMIT $2`
 	var result Result
 	for rows.Next() {
 		var objectKey string
-		if err := rows.Scan(&objectKey); err != nil {
+		var claimVersion int64
+		if err := rows.Scan(&objectKey, &claimVersion); err != nil {
 			return result, fmt.Errorf("scan pending storage cleanup: %w", err)
 		}
 		active, err := c.hasActiveObjectReference(ctx, objectKey)
@@ -165,7 +205,7 @@ LIMIT $2`
 			return result, err
 		}
 		if active {
-			cleared, err := c.clearStorageCleanupTask(ctx, objectKey)
+			cleared, err := c.completeStorageCleanupTask(ctx, objectKey, claimToken, claimVersion, now)
 			if err != nil {
 				return result, err
 			}
@@ -173,7 +213,7 @@ LIMIT $2`
 			continue
 		}
 		if err := c.storage.Delete(ctx, objectKey); err != nil {
-			if recordErr := c.recordStorageCleanupRetryFailure(ctx, objectKey, err); recordErr != nil {
+			if recordErr := c.recordStorageCleanupRetryFailure(ctx, objectKey, claimToken, claimVersion, err); recordErr != nil {
 				return result, errors.Join(
 					fmt.Errorf("delete pending storage object %s: %w", objectKey, err),
 					recordErr,
@@ -182,7 +222,7 @@ LIMIT $2`
 			return result, fmt.Errorf("delete pending storage object %s: %w", objectKey, err)
 		}
 		result.StorageObjectsDeleted++
-		cleared, err := c.clearStorageCleanupTask(ctx, objectKey)
+		cleared, err := c.completeStorageCleanupTask(ctx, objectKey, claimToken, claimVersion, now)
 		if err != nil {
 			return result, err
 		}
@@ -194,26 +234,62 @@ LIMIT $2`
 	return result, nil
 }
 
-func (c *Cleaner) recordStorageCleanupRetryFailure(ctx context.Context, objectKey string, cleanupErr error) error {
+func (c *Cleaner) recordStorageCleanupRetryFailure(ctx context.Context, objectKey, claimToken string, claimVersion int64, cleanupErr error) error {
 	const query = `UPDATE file_storage_cleanup_queue
 SET cleanup_error = $2,
     attempt_count = attempt_count + 1,
     ready_at = CURRENT_TIMESTAMP,
+    state = 'ready',
+    claim_token = NULL,
+    claimed_at = NULL,
     updated_at = CURRENT_TIMESTAMP
-WHERE object_key = $1`
-	if _, err := c.db.ExecContext(ctx, query, objectKey, cleanupErr.Error()); err != nil {
+WHERE object_key = $1
+  AND claim_token = $3
+  AND claim_version = $4
+  AND state = 'claimed'
+  AND completed_at IS NULL`
+	result, err := c.db.ExecContext(ctx, query, objectKey, cleanupErr.Error(), claimToken, claimVersion)
+	if err != nil {
 		return fmt.Errorf("record pending storage cleanup retry %s: %w", objectKey, err)
+	}
+	if affected, rowsErr := rowsAffected(result); rowsErr != nil || affected != 1 {
+		return fmt.Errorf("record pending storage cleanup retry %s: cleanup ownership lost", objectKey)
 	}
 	return nil
 }
 
-func (c *Cleaner) clearStorageCleanupTask(ctx context.Context, objectKey string) (int64, error) {
-	const query = `DELETE FROM file_storage_cleanup_queue WHERE object_key = $1`
-	result, err := c.db.ExecContext(ctx, query, objectKey)
+func (c *Cleaner) completeStorageCleanupTask(ctx context.Context, objectKey, claimToken string, claimVersion int64, now time.Time) (int64, error) {
+	const query = `UPDATE file_storage_cleanup_queue
+SET state = 'completed',
+    completed_at = $4,
+    claim_token = NULL,
+    claimed_at = NULL,
+    updated_at = $4
+WHERE object_key = $1
+  AND claim_token = $2
+  AND claim_version = $3
+  AND state = 'claimed'
+  AND completed_at IS NULL`
+	result, err := c.db.ExecContext(ctx, query, objectKey, claimToken, claimVersion, now)
 	if err != nil {
-		return 0, fmt.Errorf("clear storage cleanup responsibility %s: %w", objectKey, err)
+		return 0, fmt.Errorf("complete storage cleanup responsibility %s: %w", objectKey, err)
 	}
-	return rowsAffected(result)
+	affected, err := rowsAffected(result)
+	if err != nil {
+		return 0, err
+	}
+	if affected != 1 {
+		return 0, fmt.Errorf("complete storage cleanup responsibility %s: cleanup ownership lost", objectKey)
+	}
+	return affected, nil
+}
+
+func storageCleanupToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate storage cleanup claim token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func cleanupExecutor(db any) (sqlExecutor, error) {
@@ -242,6 +318,9 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.StoragePrepareLease <= 0 {
 		options.StoragePrepareLease = defaults.StoragePrepareLease
+	}
+	if options.StorageClaimLease <= 0 {
+		options.StorageClaimLease = defaults.StorageClaimLease
 	}
 	if options.BatchSize <= 0 {
 		options.BatchSize = defaults.BatchSize

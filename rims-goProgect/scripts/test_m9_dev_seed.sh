@@ -31,6 +31,8 @@ CLEANUP_GUARD_MIGRATION="${REPO_ROOT}/migrations/000015_fixture_attachment_clean
 [[ -f "${CLEANUP_GUARD_MIGRATION}" ]] || fail "fixture attachment cleanup guard migration is missing"
 STORAGE_CLEANUP_MIGRATION="${REPO_ROOT}/migrations/000016_file_storage_cleanup_queue.sql"
 [[ -f "${STORAGE_CLEANUP_MIGRATION}" ]] || fail "file storage cleanup queue migration is missing"
+STORAGE_OWNERSHIP_MIGRATION="${REPO_ROOT}/migrations/000017_file_storage_cleanup_ownership.sql"
+[[ -f "${STORAGE_OWNERSHIP_MIGRATION}" ]] || fail "file storage cleanup ownership migration is missing"
 for storage_fragment in \
 	'CREATE TABLE IF NOT EXISTS file_storage_cleanup_queue' \
 	'primary_error TEXT NOT NULL' \
@@ -39,6 +41,14 @@ for storage_fragment in \
 	'ADD COLUMN IF NOT EXISTS ready_at'; do
 	grep -Fq "${storage_fragment}" "${STORAGE_CLEANUP_MIGRATION}" ||
 		fail "file storage cleanup migration missing ${storage_fragment}"
+done
+for ownership_fragment in \
+	'ADD COLUMN IF NOT EXISTS prepare_token' \
+	'claim_version BIGINT' \
+	'rims.storage_prepare_token' \
+	'trg_guard_storage_cleanup_object_key'; do
+	grep -Fq "${ownership_fragment}" "${STORAGE_OWNERSHIP_MIGRATION}" ||
+		fail "file storage ownership migration missing ${ownership_fragment}"
 done
 for guard_fragment in \
 	'CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup' \
@@ -58,8 +68,10 @@ for lease_fragment in \
 	'RIMS_M9_FINALIZED_TOMBSTONE' \
 	'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT' \
 	'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT' \
+	'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT' \
 	'RIMS_M9_MAX_TOMBSTONES' \
 	'RIMS_STORAGE_CLEANUP_MAX_PENDING' \
+	'RIMS_STORAGE_CLEANUP_MAX_TOMBSTONES' \
 	'completed_at IS NULL' \
 	"set_config('statement_timeout', :'cleanup_statement_timeout', true)" \
 	'M9 cleanup release failed'; do
@@ -160,6 +172,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
@@ -216,6 +229,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT %s\n' "${RIMS_TEST_GROWTH_TOMBSTONES:?}"
 	printf 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT %s\n' "${RIMS_TEST_GROWTH_STORAGE_PENDING:?}"
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -304,6 +318,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
 	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	if [[ -e "${state_dir}/pending" ]]; then
@@ -448,6 +463,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 1'
 	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
@@ -507,6 +523,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -633,6 +650,7 @@ elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_TOMBSTONE_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_FILE_STORAGE_CLEANUP_TOMBSTONE_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":1,"namespaceTransactions":0,"namespaceAttachments":0}'
 fi
 EOF
@@ -857,13 +875,57 @@ timeout --signal=TERM --kill-after=2s 30s "${PSQL[@]}" -f - < "${legacy_migratio
 "${PSQL[@]}" -f - < "${CLEANUP_GUARD_MIGRATION}" >/dev/null
 "${PSQL[@]}" -f - < "${STORAGE_CLEANUP_MIGRATION}" >/dev/null
 "${PSQL[@]}" -f - < "${STORAGE_CLEANUP_MIGRATION}" >/dev/null
+"${PSQL[@]}" -f - < "${STORAGE_OWNERSHIP_MIGRATION}" >/dev/null
+"${PSQL[@]}" -f - < "${STORAGE_OWNERSHIP_MIGRATION}" >/dev/null
 assert_eq "$(sql "SELECT count(*) FROM information_schema.columns
 WHERE table_schema = current_schema()
   AND table_name = 'file_storage_cleanup_queue'
   AND column_name IN (
     'object_key', 'source_operation', 'primary_error', 'cleanup_error',
-    'attempt_count', 'ready_at', 'queued_at', 'updated_at'
-  )")" "8" "file storage cleanup migration columns"
+    'attempt_count', 'ready_at', 'queued_at', 'updated_at',
+    'prepare_token', 'state', 'claim_token', 'claim_version',
+    'claimed_at', 'completed_at'
+  )")" "14" "file storage cleanup migration columns"
+assert_eq "$(sql "SELECT count(*) FROM pg_trigger
+WHERE NOT tgisinternal
+  AND tgname = 'trg_guard_storage_cleanup_object_key'")" "1" "file storage ownership trigger"
+
+storage_guard_suffix="$$-${RANDOM}"
+"${PSQL[@]}" -v guard_suffix="${storage_guard_suffix}" -f - >/dev/null <<'SQL'
+BEGIN;
+SELECT set_config('rims.test_guard_key', 'guard/' || :'guard_suffix' || '.bin', true);
+INSERT INTO file_storage_cleanup_queue (
+  object_key, source_operation, prepare_token, state
+) VALUES (
+  'guard/' || :'guard_suffix' || '.bin', 'upload', 'owner-token', 'prepared'
+);
+DO $guard$
+BEGIN
+  BEGIN
+    INSERT INTO file_attachments (
+      business_type, object_key, file_url, original_name
+    ) VALUES (
+      'other', current_setting('rims.test_guard_key'), '', 'guard.bin'
+    );
+    RAISE EXCEPTION 'attachment insert bypassed storage preparation ownership';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM = 'attachment insert bypassed storage preparation ownership' THEN
+        RAISE;
+      END IF;
+  END;
+END;
+$guard$;
+SELECT set_config('rims.storage_prepare_token', 'owner-token', true);
+INSERT INTO file_attachments (
+  business_type, object_key, file_url, original_name
+) VALUES (
+  'other', 'guard/' || :'guard_suffix' || '.bin', '', 'guard.bin'
+);
+DELETE FROM file_attachments WHERE object_key = 'guard/' || :'guard_suffix' || '.bin';
+DELETE FROM file_storage_cleanup_queue WHERE object_key = 'guard/' || :'guard_suffix' || '.bin';
+ROLLBACK;
+SQL
 
 post_entitlement_suffix="$$-${RANDOM}"
 post_entitlement_key="2026/07/post-entitlement-${post_entitlement_suffix}.bin"

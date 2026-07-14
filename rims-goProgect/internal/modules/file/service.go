@@ -245,12 +245,16 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		return nil, types.ErrSystem(err)
 	}
 	objectKey := buildObjectKey(now, randHex, ext, fixtureBinding)
+	prepareToken, err := randomHex(16)
+	if err != nil {
+		return nil, types.ErrSystem(err)
+	}
 
-	if err := s.repo.PrepareStorageCleanup(ctx, objectKey, storageCleanupUpload); err != nil {
+	if err := s.repo.PrepareStorageCleanup(ctx, objectKey, storageCleanupUpload, prepareToken); err != nil {
 		return nil, types.ErrSystem(fmt.Errorf("prepare upload storage cleanup responsibility: %w", err))
 	}
 	if err := s.storage.Save(ctx, objectKey, bytes.NewReader(buf.Bytes())); err != nil {
-		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, err))
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, prepareToken, err))
 	}
 
 	record := &FileAttachment{
@@ -274,8 +278,8 @@ func (s *FileService) Upload(ctx context.Context, actor FileActor, req UploadReq
 		record.FileURL = ""
 	}
 
-	if err := s.repo.Create(ctx, record); err != nil {
-		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, err))
+	if err := s.repo.Create(ctx, record, prepareToken); err != nil {
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, objectKey, prepareToken, err))
 	}
 
 	if !isPublic {
@@ -359,11 +363,15 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.PrepareStorageCleanup(ctx, prepared.objectKey, storageCleanupReplace); err != nil {
+	prepareToken, err := randomHex(16)
+	if err != nil {
+		return nil, types.ErrSystem(err)
+	}
+	if err := s.repo.PrepareStorageCleanup(ctx, prepared.objectKey, storageCleanupReplace, prepareToken); err != nil {
 		return nil, types.ErrSystem(fmt.Errorf("prepare replacement storage cleanup responsibility: %w", err))
 	}
 	if err := s.storage.Save(ctx, prepared.objectKey, bytes.NewReader(prepared.content)); err != nil {
-		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, err))
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, prepareToken, err))
 	}
 	replacement := *original
 	replacement.ObjectKey = prepared.objectKey
@@ -377,12 +385,12 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 	} else {
 		replacement.FileURL = fmt.Sprintf(s.downloadURLFormat, replacement.ID)
 	}
-	if err := s.repo.ReplaceObject(ctx, &replacement, original.ObjectKey); err != nil {
-		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, err))
+	if err := s.repo.ReplaceObject(ctx, &replacement, original.ObjectKey, prepareToken); err != nil {
+		return nil, types.ErrSystem(s.rollbackStoredObject(ctx, prepared.objectKey, prepareToken, err))
 	}
 	if err := s.storage.Delete(ctx, original.ObjectKey); err != nil {
 		recordErr := s.repo.RecordStorageCleanupFailure(
-			ctx, original.ObjectKey, "replacement metadata committed", err.Error(),
+			ctx, original.ObjectKey, prepareToken, "replacement metadata committed", err.Error(),
 		)
 		if recordErr != nil {
 			return &replacement, types.ErrSystem(errors.Join(
@@ -392,16 +400,16 @@ func (s *FileService) Replace(ctx context.Context, id uint, actor FileActor, req
 		}
 		return &replacement, nil
 	}
-	if err := s.repo.ClearStorageCleanup(ctx, original.ObjectKey); err != nil {
+	if err := s.repo.ClearStorageCleanup(ctx, original.ObjectKey, prepareToken); err != nil {
 		return &replacement, types.ErrSystem(fmt.Errorf("clear previous object cleanup responsibility: %w", err))
 	}
 	return &replacement, nil
 }
 
-func (s *FileService) rollbackStoredObject(ctx context.Context, objectKey string, primaryErr error) error {
+func (s *FileService) rollbackStoredObject(ctx context.Context, objectKey, prepareToken string, primaryErr error) error {
 	deleteErr := s.storage.Delete(ctx, objectKey)
 	if deleteErr == nil {
-		if clearErr := s.repo.ClearStorageCleanup(ctx, objectKey); clearErr != nil {
+		if clearErr := s.repo.ClearStorageCleanup(ctx, objectKey, prepareToken); clearErr != nil {
 			return errors.Join(primaryErr, fmt.Errorf("clear storage cleanup responsibility for %s: %w", objectKey, clearErr))
 		}
 		return primaryErr
@@ -412,7 +420,7 @@ func (s *FileService) rollbackStoredObject(ctx context.Context, objectKey string
 		fmt.Errorf("rollback storage object %s: %w", objectKey, deleteErr),
 	}
 	if recordErr := s.repo.RecordStorageCleanupFailure(
-		ctx, objectKey, primaryErr.Error(), deleteErr.Error(),
+		ctx, objectKey, prepareToken, primaryErr.Error(), deleteErr.Error(),
 	); recordErr != nil {
 		errs = append(errs, fmt.Errorf("record storage cleanup failure for %s: %w", objectKey, recordErr))
 	}

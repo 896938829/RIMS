@@ -256,13 +256,17 @@ func TestCleanerSkipsAuditCleanupWhenRetentionDisabled(t *testing.T) {
 }
 
 type retryStorageCleanupDB struct {
-	pending []string
-	execs   []cleanupExec
+	pending        []string
+	execs          []cleanupExec
+	loseCompletion bool
 }
 
 func (db *retryStorageCleanupDB) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
 	db.execs = append(db.execs, cleanupExec{query: query, args: append([]any(nil), args...)})
-	if strings.Contains(query, "DELETE FROM file_storage_cleanup_queue") && len(args) == 1 {
+	if db.loseCompletion && strings.Contains(query, "SET state = 'completed'") {
+		return fakeCleanupResult{rows: 0}, nil
+	}
+	if strings.Contains(query, "SET state = 'completed'") && len(args) >= 1 {
 		key := args[0].(string)
 		for index, pending := range db.pending {
 			if pending == key {
@@ -290,6 +294,9 @@ type retryStorageCleanupRows struct {
 func (r *retryStorageCleanupRows) Next() bool { return r.idx < len(r.keys) }
 func (r *retryStorageCleanupRows) Scan(dest ...any) error {
 	*(dest[0].(*string)) = r.keys[r.idx]
+	if len(dest) > 1 {
+		*(dest[1].(*int64)) = int64(r.idx + 1)
+	}
 	r.idx++
 	return nil
 }
@@ -319,10 +326,35 @@ func TestCleanerRetriesDurableStorageCleanupResponsibilityUntilDeleteSucceeds(t 
 	if len(storage.deleted) != 2 || storage.deleted[0] != objectKey || storage.deleted[1] != objectKey {
 		t.Fatalf("storage retry deletes = %v, want two attempts for %q", storage.deleted, objectKey)
 	}
-	queueSelect := findCleanupExec(t, db.execs, "SELECT object_key FROM file_storage_cleanup_queue")
-	if !strings.Contains(queueSelect.query, "ready_at IS NOT NULL") ||
-		!strings.Contains(queueSelect.query, "queued_at < $1") {
-		t.Fatalf("storage cleanup queue SQL = %q, want failed-ready or expired-preparation fencing", queueSelect.query)
+	queueSelect := findCleanupExec(t, db.execs, "WITH candidates AS")
+	if !strings.Contains(queueSelect.query, "state = 'ready'") ||
+		!strings.Contains(queueSelect.query, "state = 'prepared'") ||
+		!strings.Contains(queueSelect.query, "state = 'claimed'") ||
+		!strings.Contains(queueSelect.query, "FOR UPDATE SKIP LOCKED") {
+		t.Fatalf("storage cleanup queue SQL = %q, want prepared/ready/stale-claim fencing", queueSelect.query)
+	}
+	completion := findCleanupExec(t, db.execs, "SET state = 'completed'")
+	if !strings.Contains(completion.query, "claim_token = $2") ||
+		!strings.Contains(completion.query, "claim_version = $3") ||
+		!strings.Contains(completion.query, "completed_at IS NULL") {
+		t.Fatalf("storage cleanup completion SQL = %q, want token/version fencing", completion.query)
+	}
+}
+
+func TestCleanerRejectsStaleStorageCleanupCompletion(t *testing.T) {
+	const objectKey = "2026/07/stale-cleaner.txt"
+	db := &retryStorageCleanupDB{pending: []string{objectKey}, loseCompletion: true}
+	storage := &fakeCleanupStorage{}
+
+	_, err := NewCleaner(db, storage, Options{BatchSize: 1}).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cleanup ownership lost") {
+		t.Fatalf("Run() error = %v, want stale ownership failure", err)
+	}
+	if len(storage.deleted) != 1 || storage.deleted[0] != objectKey {
+		t.Fatalf("storage deletes = %v, want the claimed object attempt", storage.deleted)
+	}
+	if len(db.pending) != 1 {
+		t.Fatalf("pending = %v, stale worker must not clear a newer claim", db.pending)
 	}
 }
 

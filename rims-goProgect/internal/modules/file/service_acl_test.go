@@ -15,47 +15,62 @@ import (
 )
 
 type aclFileRepoStub struct {
-	files      map[uint]*FileAttachment
-	listItems  []FileAttachment
-	softDelete []uint
-	created    []*FileAttachment
-	updated    []*FileAttachment
-	cleanup    map[string]storageCleanupTestTask
+	files        map[uint]*FileAttachment
+	listItems    []FileAttachment
+	softDelete   []uint
+	created      []*FileAttachment
+	updated      []*FileAttachment
+	cleanup      map[string]storageCleanupTestTask
+	commitTokens []string
 }
 
 type storageCleanupTestTask struct {
 	operation    string
+	prepareToken string
+	state        string
 	primaryError string
 	cleanupError string
 }
 
-func (r *aclFileRepoStub) PrepareStorageCleanup(_ context.Context, objectKey, operation string) error {
+func (r *aclFileRepoStub) PrepareStorageCleanup(_ context.Context, objectKey, operation, prepareToken string) error {
 	if r.cleanup == nil {
 		r.cleanup = make(map[string]storageCleanupTestTask)
 	}
-	r.cleanup[objectKey] = storageCleanupTestTask{operation: operation}
+	r.cleanup[objectKey] = storageCleanupTestTask{operation: operation, prepareToken: prepareToken, state: "prepared"}
 	return nil
 }
 
-func (r *aclFileRepoStub) ClearStorageCleanup(_ context.Context, objectKey string) error {
-	delete(r.cleanup, objectKey)
+func (r *aclFileRepoStub) ClearStorageCleanup(_ context.Context, objectKey, prepareToken string) error {
+	task, exists := r.cleanup[objectKey]
+	if exists && (prepareToken == "" || task.prepareToken == prepareToken) {
+		delete(r.cleanup, objectKey)
+	}
 	return nil
 }
 
-func (r *aclFileRepoStub) RecordStorageCleanupFailure(_ context.Context, objectKey, primaryError, cleanupError string) error {
+func (r *aclFileRepoStub) RecordStorageCleanupFailure(_ context.Context, objectKey, prepareToken, primaryError, cleanupError string) error {
 	task := r.cleanup[objectKey]
+	if task.prepareToken != prepareToken {
+		return errors.New("storage preparation token mismatch")
+	}
+	task.state = "ready"
 	task.primaryError = primaryError
 	task.cleanupError = cleanupError
 	r.cleanup[objectKey] = task
 	return nil
 }
 
-func (r *aclFileRepoStub) Create(ctx context.Context, f *FileAttachment) error {
+func (r *aclFileRepoStub) Create(ctx context.Context, f *FileAttachment, prepareToken string) error {
+	task := r.cleanup[f.ObjectKey]
+	if prepareToken == "" || task.prepareToken != prepareToken || task.state != "prepared" {
+		return errors.New("storage preparation token mismatch")
+	}
 	if f.ID == 0 {
 		f.ID = uint(100 + len(r.created))
 	}
 	copy := *f
 	r.created = append(r.created, &copy)
+	r.commitTokens = append(r.commitTokens, prepareToken)
 	delete(r.cleanup, f.ObjectKey)
 	return nil
 }
@@ -66,14 +81,20 @@ func (r *aclFileRepoStub) Update(ctx context.Context, f *FileAttachment) error {
 	return nil
 }
 
-func (r *aclFileRepoStub) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+func (r *aclFileRepoStub) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey, prepareToken string) error {
+	task := r.cleanup[f.ObjectKey]
+	if prepareToken == "" || task.prepareToken != prepareToken || task.state != "prepared" {
+		return errors.New("storage preparation token mismatch")
+	}
 	if err := r.Update(ctx, f); err != nil {
 		return err
 	}
+	delete(r.cleanup, f.ObjectKey)
+	r.commitTokens = append(r.commitTokens, prepareToken)
 	if r.cleanup == nil {
 		r.cleanup = make(map[string]storageCleanupTestTask)
 	}
-	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous"}
+	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous", state: "ready"}
 	return nil
 }
 

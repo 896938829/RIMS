@@ -21,7 +21,7 @@ type rejectingNamespaceRepo struct {
 	createErr error
 }
 
-func (r *rejectingNamespaceRepo) Create(context.Context, *FileAttachment) error {
+func (r *rejectingNamespaceRepo) Create(context.Context, *FileAttachment, string) error {
 	return r.createErr
 }
 
@@ -137,7 +137,7 @@ func TestUploadRetainsCleanupResponsibilityWhenMetadataAndRollbackDeleteFail(t *
 		t.Fatalf("saved/cleanup responsibility = %v/%v, want one durable pending object", storage.saved, repo.cleanup)
 	}
 	task := repo.cleanup[storage.saved[0]]
-	if task.operation != "upload" || task.primaryError != "fixture cleanup history owns object key" || task.cleanupError != "rollback disk unavailable" {
+	if task.operation != "upload" || task.prepareToken == "" || task.state != "ready" || task.primaryError != "fixture cleanup history owns object key" || task.cleanupError != "rollback disk unavailable" {
 		t.Fatalf("cleanup task = %#v, want upload failure evidence", task)
 	}
 }

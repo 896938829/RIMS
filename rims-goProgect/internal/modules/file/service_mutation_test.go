@@ -42,14 +42,20 @@ func (r *mutationFileRepo) Update(_ context.Context, f *FileAttachment) error {
 	return nil
 }
 
-func (r *mutationFileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+func (r *mutationFileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey, prepareToken string) error {
+	task := r.cleanup[f.ObjectKey]
+	if prepareToken == "" || task.prepareToken != prepareToken || task.state != "prepared" {
+		return errors.New("storage preparation token mismatch")
+	}
 	if err := r.Update(ctx, f); err != nil {
 		return err
 	}
+	delete(r.cleanup, f.ObjectKey)
+	r.commitTokens = append(r.commitTokens, prepareToken)
 	if r.cleanup == nil {
 		r.cleanup = make(map[string]storageCleanupTestTask)
 	}
-	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous"}
+	r.cleanup[previousObjectKey] = storageCleanupTestTask{operation: "replace_previous", state: "ready"}
 	return nil
 }
 
@@ -146,6 +152,9 @@ func TestFileServiceReplacePreservesIdentityBindingPositionAndCreator(t *testing
 	if len(storage.deleted) != 1 || storage.deleted[0] != original.ObjectKey {
 		t.Fatalf("deleted = %v, want old object", storage.deleted)
 	}
+	if len(repo.commitTokens) != 1 || repo.commitTokens[0] == "" {
+		t.Fatalf("replacement commit tokens = %v, want one non-empty preparation owner", repo.commitTokens)
+	}
 }
 
 func TestFileServiceReplaceUpdateFailureRollsBackNewObjectAndKeepsOld(t *testing.T) {
@@ -192,7 +201,7 @@ func TestFileServiceReplaceRetainsCleanupResponsibilityWhenUpdateAndRollbackDele
 		t.Fatalf("saved/cleanup responsibility = %v/%v, want one durable pending object", storage.saved, repo.cleanup)
 	}
 	task := repo.cleanup[storage.saved[0]]
-	if task.operation != "replace" || task.primaryError != "replace metadata failed" || task.cleanupError != "rollback disk unavailable" {
+	if task.operation != "replace" || task.prepareToken == "" || task.state != "ready" || task.primaryError != "replace metadata failed" || task.cleanupError != "rollback disk unavailable" {
 		t.Fatalf("cleanup task = %#v, want replace failure evidence", task)
 	}
 }

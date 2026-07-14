@@ -41,11 +41,17 @@ func (FileAttachment) TableName() string { return "file_attachments" }
 // deletion after a failed metadata operation. It is separate from M9 fixture
 // tombstones and applies to ordinary and fixture object keys alike.
 type StorageCleanupTask struct {
-	ObjectKey       string `gorm:"size:512;primaryKey"`
-	SourceOperation string `gorm:"size:32;not null"`
-	PrimaryError    string `gorm:"type:text;not null;default:''"`
-	CleanupError    string `gorm:"type:text;not null;default:''"`
-	AttemptCount    int64  `gorm:"not null;default:0"`
+	ObjectKey       string  `gorm:"size:512;primaryKey"`
+	SourceOperation string  `gorm:"size:32;not null"`
+	PrepareToken    string  `gorm:"size:128;not null"`
+	State           string  `gorm:"size:16;not null;default:prepared"`
+	PrimaryError    string  `gorm:"type:text;not null;default:''"`
+	CleanupError    string  `gorm:"type:text;not null;default:''"`
+	AttemptCount    int64   `gorm:"not null;default:0"`
+	ClaimToken      *string `gorm:"size:128"`
+	ClaimVersion    int64   `gorm:"not null;default:0"`
+	ClaimedAt       *time.Time
+	CompletedAt     *time.Time
 	ReadyAt         *time.Time
 	QueuedAt        time.Time `gorm:"autoCreateTime"`
 	UpdatedAt       time.Time `gorm:"index:idx_file_storage_cleanup_queue_updated_at,priority:1"`

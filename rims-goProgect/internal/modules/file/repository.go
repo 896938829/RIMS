@@ -23,12 +23,12 @@ type ListFilter struct {
 
 // FileRepository defines data access operations for file attachments.
 type FileRepository interface {
-	PrepareStorageCleanup(ctx context.Context, objectKey, operation string) error
-	ClearStorageCleanup(ctx context.Context, objectKey string) error
-	RecordStorageCleanupFailure(ctx context.Context, objectKey, primaryError, cleanupError string) error
-	Create(ctx context.Context, f *FileAttachment) error
+	PrepareStorageCleanup(ctx context.Context, objectKey, operation, prepareToken string) error
+	ClearStorageCleanup(ctx context.Context, objectKey, prepareToken string) error
+	RecordStorageCleanupFailure(ctx context.Context, objectKey, prepareToken, primaryError, cleanupError string) error
+	Create(ctx context.Context, f *FileAttachment, prepareToken string) error
 	Update(ctx context.Context, f *FileAttachment) error
-	ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error
+	ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey, prepareToken string) error
 	GetByID(ctx context.Context, id uint) (*FileAttachment, error)
 	GetByHash(ctx context.Context, hash string) (*FileAttachment, error)
 	List(ctx context.Context, filter ListFilter, page types.PageRequest) ([]FileAttachment, int64, error)
@@ -48,31 +48,40 @@ func (r *fileRepo) getDB(ctx context.Context) *gorm.DB {
 	return db.FromCtx(ctx, r.gormDB)
 }
 
-func (r *fileRepo) Create(ctx context.Context, f *FileAttachment) error {
+func (r *fileRepo) Create(ctx context.Context, f *FileAttachment, prepareToken string) error {
 	db := r.getDB(ctx)
 	return db.Transaction(func(tx *gorm.DB) error {
+		if err := requirePreparedStorage(tx, f.ObjectKey, prepareToken); err != nil {
+			return err
+		}
 		if err := tx.Create(f).Error; err != nil {
 			return err
 		}
-		return clearStorageCleanup(tx, f.ObjectKey)
+		return clearPreparedStorage(tx, f.ObjectKey, prepareToken)
 	})
 }
 
-func (r *fileRepo) PrepareStorageCleanup(ctx context.Context, objectKey, operation string) error {
+func (r *fileRepo) PrepareStorageCleanup(ctx context.Context, objectKey, operation, prepareToken string) error {
 	return r.getDB(ctx).Create(&StorageCleanupTask{
 		ObjectKey:       objectKey,
 		SourceOperation: operation,
+		PrepareToken:    prepareToken,
+		State:           "prepared",
 	}).Error
 }
 
-func (r *fileRepo) ClearStorageCleanup(ctx context.Context, objectKey string) error {
-	return clearStorageCleanup(r.getDB(ctx), objectKey)
+func (r *fileRepo) ClearStorageCleanup(ctx context.Context, objectKey, prepareToken string) error {
+	return clearPreparedStorage(r.getDB(ctx), objectKey, prepareToken)
 }
 
-func (r *fileRepo) RecordStorageCleanupFailure(ctx context.Context, objectKey, primaryError, cleanupError string) error {
+func (r *fileRepo) RecordStorageCleanupFailure(ctx context.Context, objectKey, prepareToken, primaryError, cleanupError string) error {
 	result := r.getDB(ctx).Model(&StorageCleanupTask{}).
-		Where("object_key = ?", objectKey).
+		Where("object_key = ? AND prepare_token = ?", objectKey, prepareToken).
 		Updates(map[string]any{
+			"state":         "ready",
+			"claim_token":   nil,
+			"claimed_at":    nil,
+			"completed_at":  nil,
 			"primary_error": primaryError,
 			"cleanup_error": cleanupError,
 			"attempt_count": gorm.Expr("attempt_count + 1"),
@@ -88,8 +97,26 @@ func (r *fileRepo) RecordStorageCleanupFailure(ctx context.Context, objectKey, p
 	return nil
 }
 
-func clearStorageCleanup(db *gorm.DB, objectKey string) error {
-	return db.Where("object_key = ?", objectKey).Delete(&StorageCleanupTask{}).Error
+func requirePreparedStorage(db *gorm.DB, objectKey, prepareToken string) error {
+	var task StorageCleanupTask
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("object_key = ? AND prepare_token = ? AND state = ? AND completed_at IS NULL", objectKey, prepareToken, "prepared").
+		First(&task).Error; err != nil {
+		return fmt.Errorf("storage preparation ownership lost for %q: %w", objectKey, err)
+	}
+	return db.Exec("SELECT set_config('rims.storage_prepare_token', ?, true)", prepareToken).Error
+}
+
+func clearPreparedStorage(db *gorm.DB, objectKey, prepareToken string) error {
+	result := db.Where("object_key = ? AND prepare_token = ? AND state = ? AND completed_at IS NULL", objectKey, prepareToken, "prepared").
+		Delete(&StorageCleanupTask{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("clear storage preparation: object key %q ownership lost", objectKey)
+	}
+	return nil
 }
 
 // IsFixtureAttachmentBinding reports whether a binding belongs to disposable
@@ -110,27 +137,26 @@ SELECT EXISTS (
 }
 
 func (r *fileRepo) Update(ctx context.Context, f *FileAttachment) error {
-	db := r.getDB(ctx)
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(f).Error; err != nil {
-			return err
-		}
-		return clearStorageCleanup(tx, f.ObjectKey)
-	})
+	return r.getDB(ctx).Save(f).Error
 }
 
-func (r *fileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey string) error {
+func (r *fileRepo) ReplaceObject(ctx context.Context, f *FileAttachment, previousObjectKey, prepareToken string) error {
 	db := r.getDB(ctx)
 	return db.Transaction(func(tx *gorm.DB) error {
+		if err := requirePreparedStorage(tx, f.ObjectKey, prepareToken); err != nil {
+			return err
+		}
 		if err := tx.Save(f).Error; err != nil {
 			return err
 		}
-		if err := clearStorageCleanup(tx, f.ObjectKey); err != nil {
+		if err := clearPreparedStorage(tx, f.ObjectKey, prepareToken); err != nil {
 			return err
 		}
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&StorageCleanupTask{
+		return tx.Create(&StorageCleanupTask{
 			ObjectKey:       previousObjectKey,
 			SourceOperation: "replace_previous",
+			PrepareToken:    prepareToken,
+			State:           "prepared",
 		}).Error
 	})
 }
