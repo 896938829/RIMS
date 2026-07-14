@@ -3,6 +3,8 @@
 
 BEGIN;
 
+SELECT pg_advisory_xact_lock(908130011);
+
 INSERT INTO warehouses (
     code, name, status, address, contact_person, contact_phone,
     created_by, updated_by, deleted_at

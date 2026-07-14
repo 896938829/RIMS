@@ -25,6 +25,15 @@ assert_eq() {
 
 [[ -f "${ENV_FILE}" ]] || fail "environment file not found: ${ENV_FILE}"
 [[ -f "${SEED_SCRIPT}" ]] || fail "seed script not found: ${SEED_SCRIPT}"
+SEED_SQL="${SCRIPT_DIR}/m9_dev_seed.sql"
+[[ -f "${SEED_SQL}" ]] || fail "seed SQL not found: ${SEED_SQL}"
+for lock_file in "${SEED_SCRIPT}" "${SEED_SQL}"; do
+	grep -Fq 'pg_advisory_xact_lock(908130011)' "${lock_file}" ||
+		fail "fixture namespace advisory lock missing from ${lock_file}"
+done
+if grep -Eq '^DELETE FROM rims_dev_fixture_attachment_cleanup;[[:space:]]*$' "${SEED_SCRIPT}"; then
+	fail "reset still contains an unconditional pending-table delete"
+fi
 
 GUARD_TMP_DIR="$(mktemp -d)"
 RESET_PROBE_FIXTURE_FILE=''
@@ -90,7 +99,11 @@ set -euo pipefail
 input="$(cat)"
 if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 	printf '%s\n' '{"namespaceAttachmentFiles":0}'
-elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
 	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
@@ -147,7 +160,7 @@ state_dir=${RIMS_TEST_RETRY_STATE:?}
 object_key=${RIMS_TEST_RETRY_OBJECT_KEY:?}
 if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
 	printf '%s\n' '{"namespaceAttachmentFiles":0}'
-elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
 	if [[ ! -e "${state_dir}/db-row-deleted" ]]; then
 		touch "${state_dir}/db-row-deleted" "${state_dir}/pending"
 		printf '%s' "${object_key}" | base64 | tr -d '\n' |
@@ -157,6 +170,13 @@ elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
 		printf '%s' "${object_key}" | base64 | tr -d '\n' |
 			xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
 	fi
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	rm -f -- "${state_dir}/pending"
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
 	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
 elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
 	rm -f -- "${state_dir}/pending"
@@ -214,6 +234,151 @@ PATH="${retry_bin}:${PATH}" \
 [[ ! -e "${retry_state}/pending" ]] ||
 	fail "second reset did not discharge persisted attachment responsibility"
 assert_eq "$(wc -l < "${retry_state}/rm-attempts" | tr -d '[:space:]')" "2" "physical attachment retry attempts"
+
+shared_key_dir="${GUARD_TMP_DIR}/shared-key"
+shared_key_bin="${shared_key_dir}/bin"
+shared_key_uploads="${shared_key_dir}/uploads"
+shared_key_state="${shared_key_dir}/state"
+shared_object_key="2026/07/shared-key.bin"
+shared_object_path="${shared_key_uploads}/${shared_object_key}"
+mkdir -p "${shared_key_bin}" "$(dirname "${shared_object_path}")" "${shared_key_state}"
+touch "${shared_key_state}/pending" "${shared_key_state}/ordinary-reference"
+printf 'shared attachment bytes\n' > "${shared_object_path}"
+cat > "${shared_key_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_SHARED_STATE:?}
+object_key=${RIMS_TEST_SHARED_OBJECT_KEY:?}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s' "${object_key}" | base64 | tr -d '\n' |
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 1'
+elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
+	rm -f -- "${state_dir}/pending"
+elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
+	if [[ -e "${state_dir}/pending" ]]; then
+		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 1'
+	else
+		printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	fi
+fi
+EOF
+chmod +x "${shared_key_bin}/psql"
+write_guard_env "${shared_key_dir}/test.env" "test" "127.0.0.1" "appdb"
+if PATH="${shared_key_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${shared_key_dir}/test.env" \
+	UPLOAD_DIR="${shared_key_uploads}" \
+	RIMS_TEST_SHARED_STATE="${shared_key_state}" \
+	RIMS_TEST_SHARED_OBJECT_KEY="${shared_object_key}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset deleted a pending object still referenced by an ordinary attachment"
+fi
+[[ -f "${shared_object_path}" ]] ||
+	fail "reset removed physical bytes shared with an ordinary attachment"
+[[ -e "${shared_key_state}/ordinary-reference" ]] ||
+	fail "reset removed the simulated ordinary attachment reference"
+[[ -e "${shared_key_state}/pending" ]] ||
+	fail "reset dropped pending responsibility for a still-referenced object"
+
+concurrent_dir="${GUARD_TMP_DIR}/concurrent-pending"
+concurrent_bin="${concurrent_dir}/bin"
+concurrent_uploads="${concurrent_dir}/uploads"
+concurrent_state="${concurrent_dir}/state"
+concurrent_object_key="2026/07/claimed-a.bin"
+concurrent_object_path="${concurrent_uploads}/${concurrent_object_key}"
+mkdir -p "${concurrent_bin}" "$(dirname "${concurrent_object_path}")" "${concurrent_state}"
+touch "${concurrent_state}/pending-a"
+printf 'claimed attachment bytes\n' > "${concurrent_object_path}"
+cat > "${concurrent_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_CONCURRENT_STATE:?}
+object_key=${RIMS_TEST_CONCURRENT_OBJECT_KEY:?}
+pending_count() {
+	find "${state_dir}" -maxdepth 1 -type f -name 'pending-*' | wc -l | tr -d '[:space:]'
+}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s' "${object_key}" | base64 | tr -d '\n' |
+		xargs -r printf 'RIMS_M9_RESET_OBJECT_KEY %s\n'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT"* ]]; then
+	printf '%s\n' 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT 0'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	touch "${state_dir}/pending-b"
+	rm -f -- "${state_dir}/pending-a"
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"DELETE FROM rims_dev_fixture_attachment_cleanup"* ]]; then
+	touch "${state_dir}/pending-b"
+	if [[ "${input}" == *"claim_token"* ]]; then
+		rm -f -- "${state_dir}/pending-a"
+	else
+		rm -f -- "${state_dir}/pending-a" "${state_dir}/pending-b"
+		touch "${state_dir}/concurrent-row-cleared"
+	fi
+elif [[ "${input}" == *"RIMS_M9_PENDING_ATTACHMENT_COUNT"* ]]; then
+	printf 'RIMS_M9_PENDING_ATTACHMENT_COUNT %s\n' "$(pending_count)"
+fi
+EOF
+chmod +x "${concurrent_bin}/psql"
+write_guard_env "${concurrent_dir}/test.env" "test" "127.0.0.1" "appdb"
+if PATH="${concurrent_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${concurrent_dir}/test.env" \
+	UPLOAD_DIR="${concurrent_uploads}" \
+	RIMS_TEST_CONCURRENT_STATE="${concurrent_state}" \
+	RIMS_TEST_CONCURRENT_OBJECT_KEY="${concurrent_object_key}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset reported success after a concurrent pending responsibility appeared"
+fi
+[[ -e "${concurrent_state}/pending-b" ]] ||
+	fail "reset cleared another instance's concurrent pending responsibility"
+[[ ! -e "${concurrent_state}/concurrent-row-cleared" ]] ||
+	fail "reset used an unconditional pending-table delete"
+
+namespace_race_dir="${GUARD_TMP_DIR}/namespace-race"
+namespace_race_bin="${namespace_race_dir}/bin"
+namespace_race_uploads="${namespace_race_dir}/uploads"
+namespace_race_state="${namespace_race_dir}/state"
+mkdir -p "${namespace_race_bin}" "${namespace_race_uploads}" "${namespace_race_state}"
+cat > "${namespace_race_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+state_dir=${RIMS_TEST_NAMESPACE_RACE_STATE:?}
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"INSERT INTO m9_reset_documents"* ]]; then
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+elif [[ "${input}" == *"RIMS_M9_CLAIMED_PENDING_COUNT"* ]]; then
+	touch "${state_dir}/namespace-inserted-after-snapshot"
+	printf '%s\n' 'RIMS_M9_CLAIMED_PENDING_COUNT 0'
+	printf '%s\n' 'RIMS_M9_PENDING_ATTACHMENT_COUNT 0'
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":1,"namespaceTransactions":0,"namespaceAttachments":0}'
+fi
+EOF
+chmod +x "${namespace_race_bin}/psql"
+write_guard_env "${namespace_race_dir}/test.env" "test" "127.0.0.1" "appdb"
+if PATH="${namespace_race_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${namespace_race_dir}/test.env" \
+	UPLOAD_DIR="${namespace_race_uploads}" \
+	RIMS_TEST_NAMESPACE_RACE_STATE="${namespace_race_state}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset trusted a stale namespace snapshot after a concurrent fixture insert"
+fi
+[[ -e "${namespace_race_state}/namespace-inserted-after-snapshot" ]] ||
+	fail "namespace race fixture did not reach the post-snapshot interleave"
 
 failure_safe_dir="${GUARD_TMP_DIR}/failure-safe"
 failure_safe_bin="${failure_safe_dir}/bin"

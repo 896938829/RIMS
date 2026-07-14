@@ -93,6 +93,19 @@ else
 fi
 
 if [[ "${MODE}" == "--reset" ]]; then
+	reset_claim_token="m9-reset-$(date +%s)-$$-${RANDOM}-${RANDOM}"
+	reset_claim_active=false
+	release_reset_claim() {
+		if [[ "${reset_claim_active}" == true ]]; then
+			"${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - >/dev/null 2>&1 <<'SQL' || true
+UPDATE rims_dev_fixture_attachment_cleanup
+SET claim_token = NULL,
+    claimed_at = NULL
+WHERE claim_token = :'claim_token';
+SQL
+		fi
+	}
+	trap release_reset_claim EXIT
 	upload_dir="${UPLOAD_DIR:-./uploads}"
 	if [[ "${upload_dir}" != /* ]]; then
 		upload_dir="${REPO_ROOT}/${upload_dir#./}"
@@ -111,8 +124,12 @@ if [[ "${MODE}" == "--reset" ]]; then
 		echo "Ignoring untrusted M9 reset manifest; deletion ownership is derived from PostgreSQL." >&2
 	fi
 
-	reset_sql_output="$("${PSQL[@]}" -qAt -f - <<'SQL'
+	reset_sql_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
 BEGIN;
+
+SELECT pg_advisory_xact_lock(908130011);
+LOCK TABLE documents, inventory_transactions, file_attachments
+  IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE TEMP TABLE m9_reset_documents (
     id BIGINT PRIMARY KEY,
@@ -129,12 +146,20 @@ CREATE TABLE IF NOT EXISTS rims_dev_fixture_attachment_cleanup (
     source_document_id BIGINT NOT NULL,
     source_doc_no VARCHAR(32) NOT NULL,
     source_remark TEXT NOT NULL,
+    claim_token VARCHAR(128),
+    claim_version BIGINT NOT NULL DEFAULT 0,
+    claimed_at TIMESTAMPTZ,
     queued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT rims_dev_fixture_attachment_cleanup_source_check CHECK (
       source_doc_no LIKE 'M9DOC%'
       OR source_remark LIKE 'M9-E2E:%'
     )
 );
+
+ALTER TABLE rims_dev_fixture_attachment_cleanup
+  ADD COLUMN IF NOT EXISTS claim_token VARCHAR(128),
+  ADD COLUMN IF NOT EXISTS claim_version BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 
 INSERT INTO m9_reset_documents (id, doc_no, remark)
 SELECT id, doc_no, COALESCE(remark, '')
@@ -199,39 +224,26 @@ WHERE username = 'm9_operator';
 DELETE FROM warehouses
 WHERE code = 'M9-WH-02';
 
+UPDATE rims_dev_fixture_attachment_cleanup
+SET claim_token = :'claim_token',
+    claim_version = claim_version + 1,
+    claimed_at = CURRENT_TIMESTAMP
+WHERE claim_token IS NULL;
+
 SELECT 'RIMS_M9_RESET_OBJECT_KEY ' || replace(
   encode(convert_to(object_key, 'UTF8'), 'base64'),
   E'\n',
   ''
 )
 FROM rims_dev_fixture_attachment_cleanup
+WHERE claim_token = :'claim_token'
 ORDER BY object_key;
-
-SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
-  'namespaceDocuments', (
-    SELECT count(*) FROM documents
-    WHERE id IN (SELECT id FROM m9_reset_documents)
-  ),
-  'namespaceTransactions', (
-    SELECT count(*) FROM inventory_transactions
-    WHERE doc_id IN (SELECT id FROM m9_reset_documents)
-       OR doc_no IN (SELECT doc_no FROM m9_reset_documents)
-  ),
-  'namespaceAttachments', (
-    SELECT count(*) FROM file_attachments
-    WHERE business_type = 'doc_attachment'
-      AND business_id IN (SELECT id FROM m9_reset_documents)
-  )
-)::text;
 
 COMMIT;
 SQL
 )"
+	reset_claim_active=true
 	reset_object_keys=()
-	reset_counts_seen=false
-	reset_namespace_documents=-1
-	reset_namespace_transactions=-1
-	reset_namespace_attachments=-1
 	while IFS= read -r reset_line; do
 		case "${reset_line}" in
 			'RIMS_M9_RESET_OBJECT_KEY '*)
@@ -240,26 +252,8 @@ SQL
 					fail "invalid database-produced M9 attachment key encoding"
 				reset_object_keys+=("${object_key}")
 				;;
-			'RIMS_M9_RESET_COUNTS '*)
-				reset_counts_json=${reset_line#RIMS_M9_RESET_COUNTS }
-				if [[ "${reset_counts_json}" =~ \"namespaceDocuments\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceTransactions\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceAttachments\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
-					reset_namespace_documents=${BASH_REMATCH[1]}
-					reset_namespace_transactions=${BASH_REMATCH[2]}
-					reset_namespace_attachments=${BASH_REMATCH[3]}
-					reset_counts_seen=true
-				else
-					fail "invalid M9 reset database count evidence"
-				fi
-				printf '%s\n' "${reset_line}"
-				;;
 		esac
 	done <<< "${reset_sql_output}"
-	[[ "${reset_counts_seen}" == true ]] ||
-		fail "M9 reset omitted database count evidence"
-	[[ "${reset_namespace_documents}" -eq 0 &&
-		"${reset_namespace_transactions}" -eq 0 &&
-		"${reset_namespace_attachments}" -eq 0 ]] ||
-		fail "M9 reset database namespace cleanup is incomplete"
 	for object_key in "${reset_object_keys[@]}"; do
 		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
 			fail "unsafe database-produced M9 attachment object key"
@@ -271,6 +265,31 @@ SQL
 		[[ "${object_path}" == "${upload_dir}/"* ]] ||
 			fail "database-produced M9 attachment escaped UPLOAD_DIR"
 	done
+	if (( ${#reset_object_keys[@]} > 0 )); then
+		active_reference_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
+BEGIN;
+SELECT pg_advisory_xact_lock(908130011);
+LOCK TABLE file_attachments IN SHARE ROW EXCLUSIVE MODE;
+SELECT 'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT ' || count(*)
+FROM rims_dev_fixture_attachment_cleanup AS pending
+JOIN file_attachments AS attachment
+  ON attachment.object_key = pending.object_key
+WHERE pending.claim_token = :'claim_token'
+  AND attachment.deleted_at IS NULL;
+COMMIT;
+SQL
+)"
+		active_reference_count=-1
+		while IFS= read -r active_reference_line; do
+			case "${active_reference_line}" in
+				'RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT '*)
+					active_reference_count=${active_reference_line#RIMS_M9_ACTIVE_ATTACHMENT_REFERENCE_COUNT }
+					;;
+			esac
+		done <<< "${active_reference_output}"
+		[[ "${active_reference_count}" =~ ^[0-9]+$ && "${active_reference_count}" -eq 0 ]] ||
+			fail "an active attachment still references an M9 pending object"
+	fi
 	for object_key in "${reset_object_keys[@]}"; do
 		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
 		rm -f -- "${object_path}" ||
@@ -284,18 +303,101 @@ SQL
 	done
 	[[ "${namespace_attachment_files}" -eq 0 ]] ||
 		fail "M9 attachment files remain after reset; cleanup responsibility remains in PostgreSQL"
-	"${PSQL[@]}" -qAt -f - >/dev/null <<'SQL'
+	finalize_output="$("${PSQL[@]}" -qAt -v claim_token="${reset_claim_token}" -f - <<'SQL'
 BEGIN;
-DELETE FROM rims_dev_fixture_attachment_cleanup;
-COMMIT;
-SQL
-	pending_attachment_output="$("${PSQL[@]}" -qAt -f - <<'SQL'
+SELECT pg_advisory_xact_lock(908130011);
+LOCK TABLE documents, inventory_transactions, file_attachments
+  IN SHARE ROW EXCLUSIVE MODE;
+DELETE FROM rims_dev_fixture_attachment_cleanup AS pending
+WHERE pending.claim_token = :'claim_token'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM file_attachments AS attachment
+    WHERE attachment.object_key = pending.object_key
+      AND attachment.deleted_at IS NULL
+  );
+SELECT 'RIMS_M9_CLAIMED_PENDING_COUNT ' || count(*)
+FROM rims_dev_fixture_attachment_cleanup
+WHERE claim_token = :'claim_token';
 SELECT 'RIMS_M9_PENDING_ATTACHMENT_COUNT ' || count(*)
 FROM rims_dev_fixture_attachment_cleanup;
+SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
+  'namespaceDocuments', (
+    SELECT count(*)
+    FROM documents
+    WHERE doc_no LIKE 'M9DOC%'
+       OR remark LIKE 'M9-E2E:%'
+  ),
+  'namespaceTransactions', (
+    SELECT count(*)
+    FROM inventory_transactions AS transaction
+    WHERE transaction.doc_no LIKE 'M9DOC%'
+       OR EXISTS (
+         SELECT 1
+         FROM documents AS document
+         WHERE document.id = transaction.doc_id
+           AND (
+             document.doc_no LIKE 'M9DOC%'
+             OR document.remark LIKE 'M9-E2E:%'
+           )
+       )
+  ),
+  'namespaceAttachments', (
+    SELECT count(*)
+    FROM file_attachments AS attachment
+    JOIN documents AS document ON document.id = attachment.business_id
+    WHERE attachment.business_type = 'doc_attachment'
+      AND (
+        document.doc_no LIKE 'M9DOC%'
+        OR document.remark LIKE 'M9-E2E:%'
+      )
+  )
+)::text;
+COMMIT;
 SQL
 )"
-	[[ "${pending_attachment_output}" =~ ^RIMS_M9_PENDING_ATTACHMENT_COUNT[[:space:]]+0$ ]] ||
+	claimed_pending_count=-1
+	pending_attachment_count=-1
+	reset_counts_seen=false
+	reset_namespace_documents=-1
+	reset_namespace_transactions=-1
+	reset_namespace_attachments=-1
+	reset_counts_line=''
+	while IFS= read -r finalize_line; do
+		case "${finalize_line}" in
+			'RIMS_M9_CLAIMED_PENDING_COUNT '*)
+				claimed_pending_count=${finalize_line#RIMS_M9_CLAIMED_PENDING_COUNT }
+				;;
+			'RIMS_M9_PENDING_ATTACHMENT_COUNT '*)
+				pending_attachment_count=${finalize_line#RIMS_M9_PENDING_ATTACHMENT_COUNT }
+				;;
+			'RIMS_M9_RESET_COUNTS '*)
+				reset_counts_json=${finalize_line#RIMS_M9_RESET_COUNTS }
+				if [[ "${reset_counts_json}" =~ \"namespaceDocuments\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceTransactions\"[[:space:]]*:[[:space:]]*([0-9]+).*\"namespaceAttachments\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+					reset_namespace_documents=${BASH_REMATCH[1]}
+					reset_namespace_transactions=${BASH_REMATCH[2]}
+					reset_namespace_attachments=${BASH_REMATCH[3]}
+					reset_counts_seen=true
+					reset_counts_line=${finalize_line}
+				else
+					fail "invalid M9 reset database count evidence"
+				fi
+				;;
+		esac
+	done <<< "${finalize_output}"
+	[[ "${claimed_pending_count}" =~ ^[0-9]+$ && "${claimed_pending_count}" -eq 0 ]] ||
+		fail "this reset still owns incomplete attachment cleanup responsibility"
+	[[ "${pending_attachment_count}" =~ ^[0-9]+$ && "${pending_attachment_count}" -eq 0 ]] ||
 		fail "M9 attachment cleanup responsibility remains after reset"
+	[[ "${reset_counts_seen}" == true ]] ||
+		fail "M9 reset omitted final database count evidence"
+	[[ "${reset_namespace_documents}" -eq 0 &&
+		"${reset_namespace_transactions}" -eq 0 &&
+		"${reset_namespace_attachments}" -eq 0 ]] ||
+		fail "M9 reset database namespace cleanup is incomplete"
+	printf '%s\n' "${reset_counts_line}"
+	reset_claim_active=false
+	trap - EXIT
 	rm -f -- "${reset_manifest}"
 fi
 
