@@ -99,39 +99,19 @@ if [[ "${MODE}" == "--reset" ]]; then
 	fi
 	upload_dir="$(realpath -m -- "${upload_dir}")"
 	reset_manifest="${upload_dir}/.rims-m9-reset-attachments"
-	reset_object_key_output="$("${PSQL[@]}" -qAt -c "
-SELECT fa.object_key
-FROM file_attachments AS fa
-JOIN documents AS d ON d.id = fa.business_id
-WHERE fa.business_type = 'doc_attachment'
-  AND (d.doc_no LIKE 'M9DOC%' OR d.remark LIKE 'M9-E2E:%');")"
-	reset_object_keys=()
 	if [[ -f "${reset_manifest}" ]]; then
-		mapfile -t reset_object_keys < "${reset_manifest}"
-	fi
-	if [[ -n "${reset_object_key_output}" ]]; then
-		while IFS= read -r object_key; do
-			reset_object_keys+=("${object_key}")
-		done <<< "${reset_object_key_output}"
-	fi
-	for object_key in "${reset_object_keys[@]}"; do
-		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
-			fail "unsafe M9 attachment object key"
-		if [[ "/${object_key}/" == *"/../"* ]]; then
-			fail "unsafe M9 attachment object key"
-		fi
-		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
-		[[ "${object_path}" == "${upload_dir}/"* ]] ||
-			fail "M9 attachment escaped UPLOAD_DIR"
-	done
-	if (( ${#reset_object_keys[@]} > 0 )); then
-		mkdir -p -- "${upload_dir}"
-		reset_manifest_tmp="$(mktemp "${upload_dir}/.rims-m9-reset-attachments.XXXXXX")"
-		printf '%s\n' "${reset_object_keys[@]}" | sort -u > "${reset_manifest_tmp}"
-		mv -f -- "${reset_manifest_tmp}" "${reset_manifest}"
+		while IFS= read -r manifest_key || [[ -n "${manifest_key}" ]]; do
+			[[ -n "${manifest_key}" && "${manifest_key}" != /* ]] ||
+				fail "unsafe untrusted M9 reset manifest"
+			if [[ "/${manifest_key}/" == *"/../"* ||
+				"/${manifest_key}/" == *"/./"* ]]; then
+				fail "unsafe untrusted M9 reset manifest"
+			fi
+		done < "${reset_manifest}"
+		echo "Ignoring untrusted M9 reset manifest; deletion ownership is derived from PostgreSQL." >&2
 	fi
 
-	"${PSQL[@]}" -qAt -f - <<'SQL'
+	reset_sql_output="$("${PSQL[@]}" -qAt -f - <<'SQL'
 BEGIN;
 
 CREATE TEMP TABLE m9_reset_documents (
@@ -139,11 +119,21 @@ CREATE TEMP TABLE m9_reset_documents (
     doc_no VARCHAR(32) NOT NULL
 ) ON COMMIT DROP;
 
+CREATE TEMP TABLE m9_reset_attachment_keys (
+    object_key VARCHAR(512) PRIMARY KEY
+) ON COMMIT DROP;
+
 INSERT INTO m9_reset_documents (id, doc_no)
 SELECT id, doc_no
 FROM documents
 WHERE doc_no LIKE 'M9DOC%'
    OR remark LIKE 'M9-E2E:%';
+
+INSERT INTO m9_reset_attachment_keys (object_key)
+SELECT fa.object_key
+FROM file_attachments AS fa
+WHERE fa.business_type = 'doc_attachment'
+  AND fa.business_id IN (SELECT id FROM m9_reset_documents);
 
 DELETE FROM file_attachments
 WHERE business_type = 'doc_attachment'
@@ -180,6 +170,14 @@ WHERE username = 'm9_operator';
 DELETE FROM warehouses
 WHERE code = 'M9-WH-02';
 
+SELECT 'RIMS_M9_RESET_OBJECT_KEY ' || replace(
+  encode(convert_to(object_key, 'UTF8'), 'base64'),
+  E'\n',
+  ''
+)
+FROM m9_reset_attachment_keys
+ORDER BY object_key;
+
 SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
   'namespaceDocuments', (
     SELECT count(*) FROM documents
@@ -199,6 +197,38 @@ SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
 
 COMMIT;
 SQL
+)"
+	reset_object_keys=()
+	while IFS= read -r reset_line; do
+		case "${reset_line}" in
+			'RIMS_M9_RESET_OBJECT_KEY '*)
+				encoded_key=${reset_line#RIMS_M9_RESET_OBJECT_KEY }
+				object_key="$(printf '%s' "${encoded_key}" | base64 --decode)" ||
+					fail "invalid database-produced M9 attachment key encoding"
+				reset_object_keys+=("${object_key}")
+				;;
+			'RIMS_M9_RESET_COUNTS '*) printf '%s\n' "${reset_line}" ;;
+		esac
+	done <<< "${reset_sql_output}"
+	for object_key in "${reset_object_keys[@]}"; do
+		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
+			fail "unsafe database-produced M9 attachment object key"
+		if [[ "/${object_key}/" == *"/../"* ||
+			"/${object_key}/" == *"/./"* ]]; then
+			fail "unsafe database-produced M9 attachment object key"
+		fi
+		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
+		[[ "${object_path}" == "${upload_dir}/"* ]] ||
+			fail "database-produced M9 attachment escaped UPLOAD_DIR"
+	done
+	if (( ${#reset_object_keys[@]} > 0 )); then
+		mkdir -p -- "${upload_dir}"
+		reset_manifest_tmp="$(mktemp "${upload_dir}/.rims-m9-reset-attachments.XXXXXX")"
+		printf '%s\n' "${reset_object_keys[@]}" | sort -u > "${reset_manifest_tmp}"
+		mv -f -- "${reset_manifest_tmp}" "${reset_manifest}"
+	else
+		rm -f -- "${reset_manifest}"
+	fi
 	for object_key in "${reset_object_keys[@]}"; do
 		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
 		rm -f -- "${object_path}" ||

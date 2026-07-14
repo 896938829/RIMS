@@ -63,6 +63,53 @@ if RIMS_ALLOW_DEV_SEED=1 RIMS_ENV_FILE="${GUARD_TMP_DIR}/wrong-db.env" bash "${S
 	fail "seed accepted a non-local DB_NAME"
 fi
 
+manifest_guard_dir="${GUARD_TMP_DIR}/manifest-guard"
+manifest_guard_bin="${manifest_guard_dir}/bin"
+manifest_guard_uploads="${manifest_guard_dir}/uploads"
+mkdir -p \
+	"${manifest_guard_bin}" \
+	"${manifest_guard_uploads}/ordinary" \
+	"${manifest_guard_uploads}/m9-e2e"
+printf 'ordinary upload\n' > "${manifest_guard_uploads}/ordinary/keep.bin"
+printf 'same directory, not database-owned\n' > "${manifest_guard_uploads}/m9-e2e/ordinary.bin"
+cat > "${manifest_guard_uploads}/.rims-m9-reset-attachments" <<'EOF'
+ordinary/keep.bin
+m9-e2e/ordinary.bin
+EOF
+cat > "${manifest_guard_bin}/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$(cat)"
+if [[ " $* " == *" -v namespace_attachment_files="* ]]; then
+	printf '%s\n' '{"namespaceAttachmentFiles":0}'
+elif [[ "${input}" == *"RIMS_M9_RESET_COUNTS"* ]]; then
+	printf '%s\n' 'RIMS_M9_RESET_COUNTS {"namespaceDocuments":0,"namespaceTransactions":0,"namespaceAttachments":0}'
+fi
+EOF
+chmod +x "${manifest_guard_bin}/psql"
+write_guard_env "${manifest_guard_dir}/test.env" "test" "127.0.0.1" "appdb"
+PATH="${manifest_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${manifest_guard_dir}/test.env" \
+	UPLOAD_DIR="${manifest_guard_uploads}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null
+[[ -f "${manifest_guard_uploads}/ordinary/keep.bin" ]] ||
+	fail "reset trusted an injected manifest pointing to an ordinary upload"
+[[ -f "${manifest_guard_uploads}/m9-e2e/ordinary.bin" ]] ||
+	fail "reset trusted an injected manifest pointing beside fixture uploads"
+
+printf '../outside.bin\n' > "${manifest_guard_uploads}/.rims-m9-reset-attachments"
+printf 'outside upload\n' > "${manifest_guard_dir}/outside.bin"
+if PATH="${manifest_guard_bin}:${PATH}" \
+	RIMS_ALLOW_DEV_SEED=1 \
+	RIMS_ENV_FILE="${manifest_guard_dir}/test.env" \
+	UPLOAD_DIR="${manifest_guard_uploads}" \
+	bash "${SEED_SCRIPT}" --reset >/dev/null 2>&1; then
+	fail "reset accepted a path-traversal manifest"
+fi
+[[ -f "${manifest_guard_dir}/outside.bin" ]] ||
+	fail "reset path traversal removed a file outside UPLOAD_DIR"
+
 failure_safe_dir="${GUARD_TMP_DIR}/failure-safe"
 failure_safe_bin="${failure_safe_dir}/bin"
 failure_safe_uploads="${failure_safe_dir}/uploads"
