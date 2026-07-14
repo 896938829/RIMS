@@ -93,7 +93,40 @@ else
 fi
 
 if [[ "${MODE}" == "--reset" ]]; then
-	"${PSQL[@]}" -f - <<'SQL'
+	upload_dir="${UPLOAD_DIR:-./uploads}"
+	if [[ "${upload_dir}" != /* ]]; then
+		upload_dir="${REPO_ROOT}/${upload_dir#./}"
+	fi
+	upload_dir="$(realpath -m -- "${upload_dir}")"
+	reset_object_key_output="$("${PSQL[@]}" -qAt -c "
+SELECT fa.object_key
+FROM file_attachments AS fa
+JOIN documents AS d ON d.id = fa.business_id
+WHERE fa.business_type = 'doc_attachment'
+  AND (d.doc_no LIKE 'M9DOC%' OR d.remark LIKE 'M9-E2E:%');")"
+	reset_object_keys=()
+	if [[ -n "${reset_object_key_output}" ]]; then
+		mapfile -t reset_object_keys <<< "${reset_object_key_output}"
+	fi
+	for object_key in "${reset_object_keys[@]}"; do
+		[[ -n "${object_key}" && "${object_key}" != /* ]] ||
+			fail "unsafe M9 attachment object key"
+		if [[ "/${object_key}/" == *"/../"* ]]; then
+			fail "unsafe M9 attachment object key"
+		fi
+		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
+		[[ "${object_path}" == "${upload_dir}/"* ]] ||
+			fail "M9 attachment escaped UPLOAD_DIR"
+		rm -f -- "${object_path}"
+	done
+	namespace_attachment_files=0
+	for object_key in "${reset_object_keys[@]}"; do
+		object_path="$(realpath -m -- "${upload_dir}/${object_key}")"
+		[[ ! -e "${object_path}" ]] ||
+			namespace_attachment_files=$((namespace_attachment_files + 1))
+	done
+
+	"${PSQL[@]}" -qAt -f - <<'SQL'
 BEGIN;
 
 CREATE TEMP TABLE m9_reset_documents (
@@ -106,6 +139,10 @@ SELECT id, doc_no
 FROM documents
 WHERE doc_no LIKE 'M9DOC%'
    OR remark LIKE 'M9-E2E:%';
+
+DELETE FROM file_attachments
+WHERE business_type = 'doc_attachment'
+  AND business_id IN (SELECT id FROM m9_reset_documents);
 
 DELETE FROM inventory_transactions
 WHERE doc_id IN (SELECT id FROM m9_reset_documents)
@@ -138,13 +175,33 @@ WHERE username = 'm9_operator';
 DELETE FROM warehouses
 WHERE code = 'M9-WH-02';
 
+SELECT 'RIMS_M9_RESET_COUNTS ' || json_build_object(
+  'namespaceDocuments', (
+    SELECT count(*) FROM documents
+    WHERE id IN (SELECT id FROM m9_reset_documents)
+  ),
+  'namespaceTransactions', (
+    SELECT count(*) FROM inventory_transactions
+    WHERE doc_id IN (SELECT id FROM m9_reset_documents)
+       OR doc_no IN (SELECT doc_no FROM m9_reset_documents)
+  ),
+  'namespaceAttachments', (
+    SELECT count(*) FROM file_attachments
+    WHERE business_type = 'doc_attachment'
+      AND business_id IN (SELECT id FROM m9_reset_documents)
+  )
+)::text;
+
 COMMIT;
 SQL
+	[[ "${namespace_attachment_files}" -eq 0 ]] ||
+		fail "M9 attachment files remain after reset"
 fi
 
 "${PSQL[@]}" -f - < "${SQL_FILE}"
 
-fixture_counts="$("${PSQL[@]}" -qAt -c "
+namespace_attachment_files="${namespace_attachment_files:-0}"
+fixture_counts="$("${PSQL[@]}" -qAt -v namespace_attachment_files="${namespace_attachment_files}" -c "
 SELECT json_build_object(
   'database', current_database(),
   'products', (SELECT count(*) FROM products WHERE code LIKE 'M9-PAGE-%'),
@@ -154,7 +211,37 @@ SELECT json_build_object(
   'inventories', (SELECT count(*) FROM inventories i JOIN products p ON p.id = i.product_id WHERE p.code LIKE 'M9-PAGE-%' AND i.deleted_at IS NULL),
   'nonStandardInventories', (SELECT count(*) FROM non_std_inventories WHERE temp_label LIKE 'M9-NS-%' AND deleted_at IS NULL),
   'documents', (SELECT count(*) FROM documents WHERE doc_no LIKE 'M9DOC%'),
-  'transactions', (SELECT count(*) FROM inventory_transactions WHERE doc_no LIKE 'M9DOC%')
+  'transactions', (SELECT count(*) FROM inventory_transactions WHERE doc_no LIKE 'M9DOC%'),
+  'fixtureStockQuantity', (
+    SELECT coalesce(sum(i.quantity), 0)
+    FROM inventories i
+    JOIN products p ON p.id = i.product_id
+    WHERE p.code LIKE 'M9-PAGE-%' AND i.deleted_at IS NULL
+  ),
+  'namespaceDocuments', (
+    SELECT count(*) FROM documents WHERE remark LIKE 'M9-E2E:%'
+  ),
+  'namespaceTransactions', (
+    SELECT count(*)
+    FROM inventory_transactions t
+    JOIN documents d ON d.id = t.doc_id
+    WHERE d.remark LIKE 'M9-E2E:%'
+  ),
+  'namespaceAttachments', (
+    SELECT count(*)
+    FROM file_attachments fa
+    JOIN documents d ON d.id = fa.business_id
+    WHERE fa.business_type = 'doc_attachment'
+      AND d.remark LIKE 'M9-E2E:%'
+  ),
+  'namespaceAttachmentFiles', :'namespace_attachment_files'::bigint,
+  'fixtureAttachments', (
+    SELECT count(*)
+    FROM file_attachments fa
+    JOIN documents d ON d.id = fa.business_id
+    WHERE fa.business_type = 'doc_attachment'
+      AND d.doc_no LIKE 'M9DOC%'
+  )
 )::text;")"
 echo "RIMS_M9_FIXTURE_COUNTS ${fixture_counts}"
 echo "M9 development fixtures applied to ${DB_NAME} at ${DB_HOST}:${DB_PORT:-5432}."
